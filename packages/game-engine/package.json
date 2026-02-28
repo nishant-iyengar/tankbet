@@ -1,0 +1,16 @@
+{
+  "name": "@tankbet/game-engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./constants": "./src/constants.ts",
+    "./physics": "./src/physics.ts",
+    "./maze": "./src/maze.ts",
+    "./renderer": "./src/renderer.ts",
+    "./powerups": "./src/powerups.ts"
+  }
+}

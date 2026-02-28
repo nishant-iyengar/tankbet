@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  clerkId             String    @unique
+  username            String    @unique
+  dateOfBirth         DateTime?
+  stripeCustomerId      String?
+  stripePaymentMethodId String?   // Connected bank account PM
+  balance               Int       @default(0)
+  reservedBalance     Int       @default(0)
+  totalDonatedCents   Int       @default(0)
+  tosAcceptedAt       DateTime?
+  tosAcceptedIp       String?
+  tosAcceptedVersion  String?
+  tosUserAgent        String?
+  activeGameId        String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  gamesAsCreator  Game[]         @relation("GameCreator")
+  gamesAsOpponent Game[]         @relation("GameOpponent")
+  contributions   Contribution[]
+  deposits        Deposit[]
+  withdrawals     Withdrawal[]
+}
+
+model Charity {
+  id          String   @id @default(cuid())
+  name        String
+  ein         String   @unique
+  pledgeSlug  String?
+  logoUrl     String
+  website     String
+  description String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  contributions          Contribution[]
+  disbursements          Disbursement[]
+  gamesAsCreatorCharity  Game[] @relation("GameCreatorCharity")
+  gamesAsOpponentCharity Game[] @relation("GameOpponentCharity")
+}
+
+model Game {
+  id                   String     @id @default(cuid())
+  creatorId            String
+  opponentId           String?
+  betAmountCents       Int
+  creatorCharityId     String?
+  opponentCharityId    String?
+  status               GameStatus
+  winnerId             String?
+  loserId              String?
+  winnerLivesRemaining Int?
+  colyseusRoomId       String?
+  inviteToken          String     @unique
+  inviteExpiresAt      DateTime
+  startedAt            DateTime?
+  endedAt              DateTime?
+  durationSeconds      Float?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  creator         User     @relation("GameCreator", fields: [creatorId], references: [id])
+  opponent        User?    @relation("GameOpponent", fields: [opponentId], references: [id])
+  creatorCharity  Charity? @relation("GameCreatorCharity", fields: [creatorCharityId], references: [id])
+  opponentCharity Charity? @relation("GameOpponentCharity", fields: [opponentCharityId], references: [id])
+  contributions   Contribution[]
+}
+
+enum GameStatus {
+  PENDING_ACCEPTANCE
+  IN_PROGRESS
+  COMPLETED
+  FORFEITED
+  REJECTED
+  EXPIRED
+}
+
+model Contribution {
+  id             String           @id @default(cuid())
+  userId         String
+  gameId         String
+  charityId      String
+  role           ContributionRole
+  betAmountCents Int
+  netAmountCents Int
+  disbursementId String?
+  createdAt      DateTime         @default(now())
+
+  user         User          @relation(fields: [userId], references: [id])
+  game         Game          @relation(fields: [gameId], references: [id])
+  charity      Charity       @relation(fields: [charityId], references: [id])
+  disbursement Disbursement? @relation(fields: [disbursementId], references: [id])
+}
+
+enum ContributionRole {
+  WINNER
+  LOSER
+}
+
+model Disbursement {
+  id               String             @id @default(cuid())
+  charityId        String
+  totalAmountCents Int
+  pledgeDonationId String?            @unique
+  status           DisbursementStatus
+  createdAt        DateTime           @default(now())
+  disbursedAt      DateTime?
+
+  charity       Charity        @relation(fields: [charityId], references: [id])
+  contributions Contribution[]
+}
+
+enum DisbursementStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Deposit {
+  id                    String        @id @default(cuid())
+  userId                String
+  amountCents           Int
+  stripeFeesCents       Int
+  stripePaymentIntentId String        @unique
+  status                DepositStatus
+  createdAt             DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+enum DepositStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model Withdrawal {
+  id                   String           @id @default(cuid())
+  userId               String
+  requestedAmountCents Int
+  feeCents             Int              @default(25)
+  netAmountCents       Int
+  stripePayoutId       String?          @unique
+  status               WithdrawalStatus
+  createdAt            DateTime         @default(now())
+  processedAt          DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tankbet",
+  "private": true,
+  "scripts": {
+    "dev": "./dev.sh",
+    "dev:web": "pnpm --filter @tankbet/web dev",
+    "dev:backend": "pnpm --filter @tankbet/backend dev",
+    "build": "turbo build",
+    "db:generate": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma generate",
+    "db:push": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma db push",
+    "db:migrate": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma migrate dev",
+    "db:seed": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma db seed",
+    "test:game": "open http://localhost:5173/dev/game"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0",
+    "turbo": "^2.3.0"
+  }
+}

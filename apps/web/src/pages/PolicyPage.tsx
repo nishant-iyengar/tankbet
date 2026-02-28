@@ -1,0 +1,45 @@
+export function PolicyPage(): React.JSX.Element {
+  return (
+    <div className="max-w-2xl">
+      <h1 className="text-2xl font-bold text-white mb-8">Terms of Service</h1>
+
+      <div className="space-y-6">
+        {[
+          {
+            title: '1. Overview',
+            body: 'TankBet is a charitable gaming platform. All game outcomes result in donations to registered 501(c)(3) charities. No player personally profits from game outcomes.',
+          },
+          {
+            title: '2. Eligibility',
+            body: 'You must be at least 18 years of age to use TankBet. By creating an account, you certify that you meet this requirement and that charitable gaming is legal in your jurisdiction.',
+          },
+          {
+            title: '3. Deposits and Withdrawals',
+            body: 'Deposits are made via ACH bank transfer with a minimum of $1.00. Funds are available after confirmation by our payment processor. A $0.25 processing fee is applied to all withdrawals to cover bank transfer costs. This fee is passed directly to our payment processor — TankBet does not profit from it.',
+          },
+          {
+            title: '4. Charitable Donations',
+            body: "Game bets are committed to charity. A 5% processing fee is deducted by our donation partner (Pledge.to). The remaining amount is disbursed to the winning player's chosen charity.",
+          },
+          {
+            title: '5. Game Rules',
+            body: 'Each player has 5 lives per game. If a player disconnects during a game, they have 30 seconds to reconnect before the game is forfeited. Forfeited games are treated the same as lost games for donation purposes.',
+          },
+          {
+            title: '6. Modifications',
+            body: 'TankBet reserves the right to modify these terms at any time with reasonable notice. Continued use of the platform constitutes acceptance of modified terms.',
+          },
+        ].map((section) => (
+          <section key={section.title}>
+            <h2 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">
+              {section.title}
+            </h2>
+            <p className="text-slate-300 text-sm leading-relaxed">{section.body}</p>
+          </section>
+        ))}
+
+        <p className="text-xs text-slate-600 pt-4">Last updated: February 2026</p>
+      </div>
+    </div>
+  );
+}

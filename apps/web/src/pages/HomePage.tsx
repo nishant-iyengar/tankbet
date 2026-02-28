@@ -1,0 +1,175 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useApi } from '../hooks/useApi';
+import { formatCents } from '@tankbet/shared/utils';
+import { BET_AMOUNTS_CENTS } from '@tankbet/game-engine/constants';
+import { BankSetupModal } from '../components/BankSetupModal';
+import type { BetAmountCents, PublicCharity } from '@tankbet/shared/types';
+
+interface UserData {
+  username: string;
+  balance: number;
+  hasBankAccount: boolean;
+}
+
+export function HomePage(): React.JSX.Element {
+  const { get, post } = useApi();
+  const navigate = useNavigate();
+  const [user, setUser] = useState<UserData | null>(null);
+  const [charities, setCharities] = useState<PublicCharity[]>([]);
+  const [selectedBet, setSelectedBet] = useState<BetAmountCents>(200);
+  const [selectedCharity, setSelectedCharity] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+  const [showBankModal, setShowBankModal] = useState(false);
+  const [toast, setToast] = useState('');
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshUser = useCallback(() => {
+    void get<UserData>('/api/users/me').then(setUser);
+  }, [get]);
+
+  useEffect(() => {
+    refreshUser();
+    void get<{ charities: PublicCharity[] }>('/api/charities').then((r) => setCharities(r.charities));
+  }, [get, refreshUser]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  function showToast(message: string): void {
+    if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => setToast(''), 2500);
+  }
+
+  async function createGame(): Promise<void> {
+    if (!selectedCharity) {
+      setError('Please select a charity');
+      return;
+    }
+
+    setCreating(true);
+    setError('');
+    try {
+      const result = await post<{ inviteToken: string }>('/api/games/create', {
+        betAmountCents: selectedBet,
+        charityId: selectedCharity,
+      });
+      const link = `${window.location.origin}/invite/${result.inviteToken}`;
+      await navigator.clipboard.writeText(link);
+      showToast('Invite link copied!');
+      setTimeout(() => {
+        if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
+        setToast('');
+        navigate(`/invite/${result.inviteToken}?creator=true`);
+      }, 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create game');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleCreateGame(): Promise<void> {
+    if (!user?.hasBankAccount) {
+      setShowBankModal(true);
+      return;
+    }
+    await createGame();
+  }
+
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <p className="text-slate-500 text-sm">Loading…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-xl">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">
+          Welcome, <span className="text-cyan-400">{user.username}</span>
+        </h1>
+        <p className="text-slate-500 text-sm mt-1">Challenge a friend and donate to charity.</p>
+      </div>
+
+      <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6">
+        <h2 className="text-base font-semibold text-white mb-5">New Game</h2>
+
+        {/* Bet chip selector */}
+        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Bet Amount</p>
+        <div className="flex gap-2 mb-5">
+          {BET_AMOUNTS_CENTS.map((amount) => (
+            <button
+              key={amount}
+              onClick={() => setSelectedBet(amount)}
+              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors tabular-nums ${
+                selectedBet === amount
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-300'
+                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+              }`}
+            >
+              {formatCents(amount)}
+            </button>
+          ))}
+        </div>
+
+        {/* Charity picker */}
+        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Your Charity</p>
+        <div className="grid grid-cols-2 gap-2 mb-5">
+          {charities.map((charity) => (
+            <button
+              key={charity.id}
+              onClick={() => setSelectedCharity(charity.id)}
+              className={`p-3 rounded-lg border text-left transition-colors ${
+                selectedCharity === charity.id
+                  ? 'bg-cyan-400/10 border-cyan-400/60'
+                  : 'bg-slate-800 border-slate-700 hover:border-slate-600'
+              }`}
+            >
+              <span className={`block text-sm font-medium ${
+                selectedCharity === charity.id ? 'text-cyan-300' : 'text-slate-300'
+              }`}>
+                {charity.name}
+              </span>
+              <span className="block text-xs text-slate-500 mt-0.5">{charity.description}</span>
+            </button>
+          ))}
+        </div>
+
+        {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+
+        <button
+          onClick={() => void handleCreateGame()}
+          disabled={creating || !selectedCharity}
+          className="w-full bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+        >
+          {creating ? 'Creating…' : 'Generate Invite Link'}
+        </button>
+      </div>
+
+      {showBankModal && (
+        <BankSetupModal
+          onSuccess={() => {
+            setShowBankModal(false);
+            refreshUser();
+            void createGame();
+          }}
+          onClose={() => setShowBankModal(false)}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-700 text-slate-100 text-sm px-5 py-3 rounded-xl shadow-2xl z-50 pointer-events-none">
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}

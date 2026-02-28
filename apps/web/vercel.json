@@ -1,0 +1,8 @@
+{
+  "buildCommand": "cd ../.. && pnpm --filter @tankbet/web build",
+  "outputDirectory": "dist",
+  "installCommand": "cd ../.. && pnpm install",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
