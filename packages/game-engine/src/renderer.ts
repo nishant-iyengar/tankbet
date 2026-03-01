@@ -9,9 +9,7 @@ import {
   HUD_PADDING,
   TANK_COLOR_P1,
   TANK_COLOR_P2,
-  MISSILE_RADIUS,
   MISSILE_COLOR,
-  MISSILE_HOMING_DELAY_S,
 } from './constants';
 import type { TankState, BulletState, MissileState } from './physics';
 import { degreesToRadians } from './physics';
@@ -88,19 +86,96 @@ export function drawCountdown(
 
 export function drawMissile(ctx: CanvasRenderingContext2D, missile: MissileState): void {
   ctx.save();
+  ctx.translate(missile.x, missile.y);
+  ctx.rotate(Math.atan2(missile.vy, missile.vx));
+
   ctx.fillStyle = MISSILE_COLOR;
+
+  // Body + nose: rectangle with a pointed nose at the front (+x)
+  const noseLen = 3;
+  const halfBodyLen = 5;
+  const halfBodyW = 2;
   ctx.beginPath();
-  ctx.arc(missile.x, missile.y, MISSILE_RADIUS, 0, Math.PI * 2);
+  ctx.moveTo(halfBodyLen + noseLen, 0);    // nose tip
+  ctx.lineTo(halfBodyLen, -halfBodyW);     // front shoulder top
+  ctx.lineTo(-halfBodyLen, -halfBodyW);    // rear shoulder top
+  ctx.lineTo(-halfBodyLen, halfBodyW);     // rear shoulder bottom
+  ctx.lineTo(halfBodyLen, halfBodyW);      // front shoulder bottom
+  ctx.closePath();
   ctx.fill();
 
-  // Cyan ring once homing switches to closest-tank mode
-  if (missile.age >= MISSILE_HOMING_DELAY_S) {
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 1.5;
+  // Fins: two small delta fins at the tail
+  const finDepth = 2;
+  const finSpread = 3;
+  // top fin
+  ctx.beginPath();
+  ctx.moveTo(-halfBodyLen + 2, -halfBodyW);
+  ctx.lineTo(-halfBodyLen - finDepth, -halfBodyW - finSpread);
+  ctx.lineTo(-halfBodyLen - finDepth, -halfBodyW);
+  ctx.closePath();
+  ctx.fill();
+  // bottom fin
+  ctx.beginPath();
+  ctx.moveTo(-halfBodyLen + 2, halfBodyW);
+  ctx.lineTo(-halfBodyLen - finDepth, halfBodyW + finSpread);
+  ctx.lineTo(-halfBodyLen - finDepth, halfBodyW);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+export const EXPLOSION_DURATION_MS = 650;
+const EXPLOSION_PARTICLE_COUNT = 12;
+const EXPLOSION_MAX_RADIUS = 28;
+
+export function drawExplosion(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  elapsedMs: number,
+): void {
+  const t = Math.min(elapsedMs / EXPLOSION_DURATION_MS, 1); // 0 → 1
+  const alpha = 1 - t;
+
+  ctx.save();
+
+  // Central white flash (first 30% of duration only)
+  if (t < 0.3) {
+    const flashT = t / 0.3;
+    ctx.globalAlpha = (1 - flashT) * 0.9;
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(missile.x, missile.y, MISSILE_RADIUS + 3, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(x, y, 14 * flashT, 0, Math.PI * 2);
+    ctx.fill();
   }
+
+  // Expanding shockwave ring
+  ctx.globalAlpha = alpha * 0.7;
+  ctx.strokeStyle = '#fb923c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, EXPLOSION_MAX_RADIUS * t, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Radiating particles — vary speed so they spread at different rates
+  for (let i = 0; i < EXPLOSION_PARTICLE_COUNT; i++) {
+    const angle = (i / EXPLOSION_PARTICLE_COUNT) * Math.PI * 2;
+    const speedFactor = 0.5 + (i % 3) * 0.25; // 0.5 / 0.75 / 1.0
+    const dist = EXPLOSION_MAX_RADIUS * speedFactor * t;
+    const px = x + Math.cos(angle) * dist;
+    const py = y + Math.sin(angle) * dist;
+    const radius = 2.5 * (1 - t * 0.6);
+
+    // Color: white → yellow → orange as t increases
+    const color = t < 0.25 ? '#ffffff' : t < 0.55 ? '#fbbf24' : '#f97316';
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(px, py, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 

@@ -4,8 +4,6 @@ import { matchMaker } from '@colyseus/core';
 import crypto from 'node:crypto';
 
 // Track pending reservations per (roomId, userId) to handle React StrictMode double-mount.
-// The cleanup of the first effect sets `cancelled = true` before the second mount calls this
-// endpoint again, so we return the same unresumed reservation rather than a new one.
 const pendingReservations = new Map<string, { sessionId: string; createdAt: number }>();
 const RESERVATION_TTL_MS = 10_000;
 
@@ -55,7 +53,7 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /api/dev/seat — generate an on-demand seat reservation for a dev game room.
+  // POST /api/dev/seat — generate a seat reservation for a dev game room.
   interface SeatBody { roomId: string; userId: string }
   fastify.post<{ Body: SeatBody }>('/seat', async (req, reply) => {
     const { roomId, userId } = req.body;
@@ -71,7 +69,13 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = pendingReservations.get(key);
     if (existing && now - existing.createdAt < RESERVATION_TTL_MS) {
       console.log(`[dev/seat] returning cached reservation sessionId=${existing.sessionId}`);
-      return reply.send({ room: listing, sessionId: existing.sessionId });
+      // Return the flat 0.17 seat reservation format
+      return reply.send({
+        sessionId: existing.sessionId,
+        roomId: listing.roomId,
+        name: listing.name,
+        processId: listing.processId,
+      });
     }
 
     try {

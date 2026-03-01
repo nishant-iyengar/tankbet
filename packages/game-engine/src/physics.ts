@@ -11,7 +11,9 @@ import {
   MISSILE_SPEED,
   MISSILE_HOMING_DELAY_S,
   MISSILE_TURN_SPEED_DEG,
-  MISSILE_WALL_LOOKAHEAD,
+  MISSILE_WALL_AVOID_RADIUS,
+  MISSILE_WALL_AVOID_STRENGTH,
+  MISSILE_WALL_AVOID_TURN_DEG,
 } from './constants';
 
 export type Vec2 = { x: number; y: number };
@@ -392,8 +394,23 @@ export function createMissile(id: string, tank: TankState, enemyId: string): Mis
   };
 }
 
-// Steer the missile toward its target while avoiding walls.
-// Uses a clamped turn rate so the missile is "dumb" and outmanoeuvrable.
+// Returns the closest point on segment (ax,ay)→(bx,by) to point (px,py).
+function closestPointOnSegment(
+  px: number, py: number,
+  ax: number, ay: number,
+  bx: number, by: number,
+): { x: number; y: number } {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return { x: ax, y: ay };
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+  return { x: ax + t * dx, y: ay + t * dy };
+}
+
+// Steer the missile toward its target (dumb, 90°/s) while smartly avoiding walls
+// (potential-field repulsion, up to 300°/s when walls are close).
+// Missiles do NOT bounce — wall contact is handled by the caller (destroy on crossing).
 export function updateMissile(
   missile: MissileState,
   tanks: TankState[],
@@ -402,12 +419,11 @@ export function updateMissile(
 ): MissileState {
   const newAge = missile.age + dt;
 
-  // --- Determine target ---
+  // --- Determine homing target ---
   let targetTank: TankState | undefined;
   if (newAge < MISSILE_HOMING_DELAY_S) {
     targetTank = tanks.find((t) => t.id === missile.initialTargetId);
   } else {
-    // Home in on the closest tank (including the owner)
     let minDistSq = Infinity;
     for (const t of tanks) {
       const dx = t.x - missile.x;
@@ -420,58 +436,51 @@ export function updateMissile(
     }
   }
 
-  // --- Desired homing angle ---
-  const currentAngleDeg = radiansToDegrees(Math.atan2(missile.vy, missile.vx));
-  let homingAngleDeg = currentAngleDeg; // default: go straight if no target
+  // --- Homing vector (normalized, zero if no target) ---
+  let homingX = 0;
+  let homingY = 0;
   if (targetTank) {
-    homingAngleDeg = radiansToDegrees(Math.atan2(
-      targetTank.y - missile.y,
-      targetTank.x - missile.x,
-    ));
+    const dx = targetTank.x - missile.x;
+    const dy = targetTank.y - missile.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 0) { homingX = dx / dist; homingY = dy / dist; }
   }
 
-  // --- Wall avoidance: look ahead in current heading ---
-  const normVx = missile.vx / MISSILE_SPEED;
-  const normVy = missile.vy / MISSILE_SPEED;
-  const lookaheadX = missile.x + normVx * MISSILE_WALL_LOOKAHEAD;
-  const lookaheadY = missile.y + normVy * MISSILE_WALL_LOOKAHEAD;
-
-  let wallAhead = false;
+  // --- Wall avoidance: potential-field repulsion from nearby wall segments ---
+  let avoidX = 0;
+  let avoidY = 0;
+  let maxRepulsion = 0; // [0, 1] — how urgently walls need avoiding right now
   for (const wall of walls) {
-    if (bulletCrossesWall(missile.x, missile.y, lookaheadX, lookaheadY, wall).crossed) {
-      wallAhead = true;
-      break;
+    const cp = closestPointOnSegment(missile.x, missile.y, wall.x1, wall.y1, wall.x2, wall.y2);
+    const dx = missile.x - cp.x;
+    const dy = missile.y - cp.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < MISSILE_WALL_AVOID_RADIUS && dist > 0) {
+      const t = 1 - dist / MISSILE_WALL_AVOID_RADIUS;
+      const weight = t * t; // quadratic falloff
+      avoidX += (dx / dist) * weight;
+      avoidY += (dy / dist) * weight;
+      if (weight > maxRepulsion) maxRepulsion = weight;
     }
   }
 
-  let desiredAngleDeg = homingAngleDeg;
-  if (wallAhead) {
-    const leftAngleDeg = currentAngleDeg - 90;
-    const rightAngleDeg = currentAngleDeg + 90;
-    const leftClear = !headingCrossesAnyWall(missile.x, missile.y, leftAngleDeg, walls, MISSILE_WALL_LOOKAHEAD);
-    const rightClear = !headingCrossesAnyWall(missile.x, missile.y, rightAngleDeg, walls, MISSILE_WALL_LOOKAHEAD);
-
-    if (leftClear && rightClear) {
-      // Both clear: pick whichever is closer to the homing angle
-      desiredAngleDeg =
-        Math.abs(shortestAngleDelta(homingAngleDeg, leftAngleDeg)) <=
-        Math.abs(shortestAngleDelta(homingAngleDeg, rightAngleDeg))
-          ? leftAngleDeg
-          : rightAngleDeg;
-    } else if (leftClear) {
-      desiredAngleDeg = leftAngleDeg;
-    } else if (rightClear) {
-      desiredAngleDeg = rightAngleDeg;
-    } else {
-      // Both blocked — dumb: keep turning left (missile may stall in a corner briefly)
-      desiredAngleDeg = leftAngleDeg;
-    }
+  // --- Blend homing + avoidance into a desired direction ---
+  const currentAngleDeg = radiansToDegrees(Math.atan2(missile.vy, missile.vx));
+  const blendX = homingX + avoidX * MISSILE_WALL_AVOID_STRENGTH;
+  const blendY = homingY + avoidY * MISSILE_WALL_AVOID_STRENGTH;
+  let desiredAngleDeg = currentAngleDeg;
+  if (blendX !== 0 || blendY !== 0) {
+    desiredAngleDeg = radiansToDegrees(Math.atan2(blendY, blendX));
   }
 
-  // --- Clamp turn rate ---
-  const maxTurnDeg = MISSILE_TURN_SPEED_DEG * dt;
+  // --- Turn rate: scales from dumb (90°/s) up to fast (300°/s) near walls ---
+  const effectiveTurnRate =
+    MISSILE_TURN_SPEED_DEG +
+    (MISSILE_WALL_AVOID_TURN_DEG - MISSILE_TURN_SPEED_DEG) * maxRepulsion;
+  const maxTurnDeg = effectiveTurnRate * dt;
   let delta = shortestAngleDelta(desiredAngleDeg, currentAngleDeg);
   if (Math.abs(delta) > maxTurnDeg) delta = Math.sign(delta) * maxTurnDeg;
+
   const newAngleDeg = currentAngleDeg + delta;
   const newRad = degreesToRadians(newAngleDeg);
 
@@ -486,25 +495,8 @@ export function updateMissile(
 }
 
 // Returns the shortest signed rotation from `from` to `to`, in [-180, 180].
-function shortestAngleDelta(to: number, from: number): number {
+export function shortestAngleDelta(to: number, from: number): number {
   let d = ((to - from) % 360 + 360) % 360;
   if (d > 180) d -= 360;
   return d;
-}
-
-// Returns true if a ray from (x, y) in direction `angleDeg` crosses any wall within `dist`.
-function headingCrossesAnyWall(
-  x: number,
-  y: number,
-  angleDeg: number,
-  walls: WallSegment[],
-  dist: number,
-): boolean {
-  const rad = degreesToRadians(angleDeg);
-  const tx = x + Math.cos(rad) * dist;
-  const ty = y + Math.sin(rad) * dist;
-  for (const wall of walls) {
-    if (bulletCrossesWall(x, y, tx, ty, wall).crossed) return true;
-  }
-  return false;
 }

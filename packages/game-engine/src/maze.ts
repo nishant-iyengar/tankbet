@@ -1,4 +1,4 @@
-import { CELL_SIZE } from './constants';
+import { CELL_SIZE, MAZE_MIN_WALL_FRACTION } from './constants';
 import type { Vec2 } from './physics';
 
 export type Cell = { row: number; col: number };
@@ -7,7 +7,7 @@ export type Maze = { cols: number; rows: number; walls: Wall[] };
 export type LineSegment = { x1: number; y1: number; x2: number; y2: number };
 
 // Mulberry32 seeded PRNG
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let s = seed | 0;
   return () => {
     s = (s + 0x6d2b79f5) | 0;
@@ -71,7 +71,7 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
   // Track last direction to bias toward straight corridors
   let lastDr = 0;
   let lastDc = 0;
-  const STRAIGHT_BIAS = 0.6; // probability of continuing straight when possible
+  const STRAIGHT_BIAS = 0.80; // probability of continuing straight when possible
 
   while (stack.length > 0) {
     const current = stack[stack.length - 1];
@@ -123,6 +123,21 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
     stack.push(nextCell);
   }
 
+  // Remove ~20% of remaining internal walls to create loops and eliminate
+  // most dead ends, giving the maze a more open, less twisty feel.
+  const remainingKeys = Array.from(allWalls);
+  const removeCount = Math.floor(remainingKeys.length * 0.20);
+  // Fisher-Yates shuffle the keys then drop the first removeCount
+  for (let i = remainingKeys.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    const tmp = remainingKeys[i];
+    remainingKeys[i] = remainingKeys[j] as string;
+    remainingKeys[j] = tmp as string;
+  }
+  for (let i = 0; i < removeCount; i++) {
+    allWalls.delete(remainingKeys[i] as string);
+  }
+
   // Convert remaining wall keys back to Wall objects
   const walls: Wall[] = [];
   for (const key of allWalls) {
@@ -136,34 +151,67 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
 }
 
 export function mazeToSegments(maze: Maze): LineSegment[] {
-  const segments: LineSegment[] = [];
   const totalWidth = maze.cols * CELL_SIZE;
   const totalHeight = maze.rows * CELL_SIZE;
+  const minLength = totalWidth * MAZE_MIN_WALL_FRACTION;
 
-  // Outer boundary walls
-  // Top
-  segments.push({ x1: 0, y1: 0, x2: totalWidth, y2: 0 });
-  // Bottom
-  segments.push({ x1: 0, y1: totalHeight, x2: totalWidth, y2: totalHeight });
-  // Left
-  segments.push({ x1: 0, y1: 0, x2: 0, y2: totalHeight });
-  // Right
-  segments.push({ x1: totalWidth, y1: 0, x2: totalWidth, y2: totalHeight });
+  // Border walls are always kept
+  const segments: LineSegment[] = [
+    { x1: 0, y1: 0, x2: totalWidth, y2: 0 },
+    { x1: 0, y1: totalHeight, x2: totalWidth, y2: totalHeight },
+    { x1: 0, y1: 0, x2: 0, y2: totalHeight },
+    { x1: totalWidth, y1: 0, x2: totalWidth, y2: totalHeight },
+  ];
 
-  // Internal walls
+  // Group internal walls by their shared axis coordinate so adjacent
+  // collinear segments can be merged into single longer lines.
+  const verticals = new Map<number, number[]>();   // x → list of y-starts
+  const horizontals = new Map<number, number[]>(); // y → list of x-starts
+
   for (const wall of maze.walls) {
     if (wall.axis === 'v') {
-      // Vertical wall between (from.row, from.col) and (from.row, from.col+1)
-      // Wall is on the right edge of the 'from' cell
       const x = (wall.from.col + 1) * CELL_SIZE;
       const y = wall.from.row * CELL_SIZE;
-      segments.push({ x1: x, y1: y, x2: x, y2: y + CELL_SIZE });
+      if (!verticals.has(x)) verticals.set(x, []);
+      verticals.get(x)!.push(y);
     } else {
-      // Horizontal wall between (from.row, from.col) and (from.row+1, from.col)
-      // Wall is on the bottom edge of the 'from' cell
       const x = wall.from.col * CELL_SIZE;
       const y = (wall.from.row + 1) * CELL_SIZE;
-      segments.push({ x1: x, y1: y, x2: x + CELL_SIZE, y2: y });
+      if (!horizontals.has(y)) horizontals.set(y, []);
+      horizontals.get(y)!.push(x);
+    }
+  }
+
+  // Merge a sorted list of cell-start positions into maximal runs, then
+  // emit only runs that meet the minimum length requirement.
+  function mergeRuns(positions: number[]): Array<[number, number]> {
+    positions.sort((a, b) => a - b);
+    const runs: Array<[number, number]> = [];
+    let start = positions[0]!;
+    let end = start + CELL_SIZE;
+    for (let i = 1; i < positions.length; i++) {
+      const pos = positions[i]!;
+      if (pos === end) {
+        end += CELL_SIZE;
+      } else {
+        if (end - start >= minLength) runs.push([start, end]);
+        start = pos;
+        end = pos + CELL_SIZE;
+      }
+    }
+    if (end - start >= minLength) runs.push([start, end]);
+    return runs;
+  }
+
+  for (const [x, ys] of verticals) {
+    for (const [y1, y2] of mergeRuns(ys)) {
+      segments.push({ x1: x, y1, x2: x, y2 });
+    }
+  }
+
+  for (const [y, xs] of horizontals) {
+    for (const [x1, x2] of mergeRuns(xs)) {
+      segments.push({ x1, y1: y, x2, y2: y });
     }
   }
 

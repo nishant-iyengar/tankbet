@@ -13,30 +13,30 @@
   },
   "dependencies": {
     "@clerk/fastify": "^2.0.0",
-    "@colyseus/core": "^0.15.57",
-    "@colyseus/schema": "^2.0.35",
-    "@colyseus/ws-transport": "^0.15.3",
+    "@colyseus/core": "^0.17.38",
+    "@colyseus/schema": "^4.0.15",
+    "@colyseus/ws-transport": "^0.17.9",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
     "@prisma/adapter-pg": "^7.4.1",
     "@prisma/client": "^7.4.1",
     "@tankbet/game-engine": "workspace:*",
     "@tankbet/shared": "workspace:*",
-    "colyseus": "^0.15.55",
+    "colyseus": "^0.17.8",
     "fastify": "^5.2.0",
     "node-cron": "^4.2.1",
     "pg": "^8.19.0",
     "stripe": "^17.5.0",
-    "twilio": "^5.12.2"
+    "twilio": "^5.12.2",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@colyseus/testing": "0.15.4",
+    "@colyseus/testing": "^0.17.11",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.16.0",
-    "colyseus.js": "0.15.28",
     "prisma": "^7.4.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
+    "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
   "prisma": {

@@ -11,6 +11,10 @@
     "./physics": "./src/physics.ts",
     "./maze": "./src/maze.ts",
     "./renderer": "./src/renderer.ts",
-    "./powerups": "./src/powerups.ts"
+    "./powerups": "./src/powerups.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "dependencies": {
+    "@colyseus/schema": "^4.0.15"
   }
 }

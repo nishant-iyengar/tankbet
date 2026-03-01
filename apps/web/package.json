@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.20.0",
+    "@colyseus/sdk": "^0.17.34",
     "@stripe/stripe-js": "^8.8.0",
     "@tankbet/game-engine": "workspace:*",
     "@tankbet/shared": "workspace:*",
-    "colyseus.js": "^0.15.25",
     "react": "^19.0.0",
     "react-datepicker": "^9.1.0",
     "react-dom": "^19.0.0",
@@ -27,7 +27,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.0",
+    "typescript": "^5.9.3",
     "vite": "^6.0.0"
   }
 }

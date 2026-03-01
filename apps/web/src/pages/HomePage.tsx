@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import { formatCents } from '@tankbet/shared/utils';
 import { BET_AMOUNTS_CENTS } from '@tankbet/game-engine/constants';
 import { BankSetupModal } from '../components/BankSetupModal';
+import { BETA_MODE } from '../config';
 import type { BetAmountCents, PublicCharity } from '@tankbet/shared/types';
 
 interface UserData {
@@ -47,7 +48,7 @@ export function HomePage(): React.JSX.Element {
   }
 
   async function createGame(): Promise<void> {
-    if (!selectedCharity) {
+    if (!BETA_MODE && !selectedCharity) {
       setError('Please select a charity');
       return;
     }
@@ -56,8 +57,8 @@ export function HomePage(): React.JSX.Element {
     setError('');
     try {
       const result = await post<{ inviteToken: string }>('/api/games/create', {
-        betAmountCents: selectedBet,
-        charityId: selectedCharity,
+        betAmountCents: BETA_MODE ? 0 : selectedBet,
+        charityId: BETA_MODE ? null : selectedCharity,
       });
       const link = `${window.location.origin}/invite/${result.inviteToken}`;
       await navigator.clipboard.writeText(link);
@@ -75,7 +76,7 @@ export function HomePage(): React.JSX.Element {
   }
 
   async function handleCreateGame(): Promise<void> {
-    if (!user?.hasBankAccount) {
+    if (!BETA_MODE && !user?.hasBankAccount) {
       setShowBankModal(true);
       return;
     }
@@ -103,51 +104,61 @@ export function HomePage(): React.JSX.Element {
         <h2 className="text-base font-semibold text-white mb-5">New Game</h2>
 
         {/* Bet chip selector */}
-        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Bet Amount</p>
-        <div className="flex gap-2 mb-5">
-          {BET_AMOUNTS_CENTS.map((amount) => (
-            <button
-              key={amount}
-              onClick={() => setSelectedBet(amount)}
-              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors tabular-nums ${
-                selectedBet === amount
-                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-300'
-                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
-              }`}
-            >
-              {formatCents(amount)}
-            </button>
-          ))}
+        <div className={BETA_MODE ? 'opacity-40 pointer-events-none' : ''}>
+          <div className="flex items-center gap-2 mb-2">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Bet Amount</p>
+            {BETA_MODE && <span className="text-xs text-slate-600 normal-case tracking-normal">Disabled in beta</span>}
+          </div>
+          <div className="flex gap-2 mb-5">
+            {BET_AMOUNTS_CENTS.map((amount) => (
+              <button
+                key={amount}
+                onClick={() => setSelectedBet(amount)}
+                className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors tabular-nums ${
+                  selectedBet === amount
+                    ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+                }`}
+              >
+                {formatCents(amount)}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Charity picker */}
-        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Your Charity</p>
-        <div className="grid grid-cols-2 gap-2 mb-5">
-          {charities.map((charity) => (
-            <button
-              key={charity.id}
-              onClick={() => setSelectedCharity(charity.id)}
-              className={`p-3 rounded-lg border text-left transition-colors ${
-                selectedCharity === charity.id
-                  ? 'bg-cyan-400/10 border-cyan-400/60'
-                  : 'bg-slate-800 border-slate-700 hover:border-slate-600'
-              }`}
-            >
-              <span className={`block text-sm font-medium ${
-                selectedCharity === charity.id ? 'text-cyan-300' : 'text-slate-300'
-              }`}>
-                {charity.name}
-              </span>
-              <span className="block text-xs text-slate-500 mt-0.5">{charity.description}</span>
-            </button>
-          ))}
+        <div className={BETA_MODE ? 'opacity-40 pointer-events-none' : ''}>
+          <div className="flex items-center gap-2 mb-2">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Your Charity</p>
+            {BETA_MODE && <span className="text-xs text-slate-600 normal-case tracking-normal">Disabled in beta</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-2 mb-5">
+            {charities.map((charity) => (
+              <button
+                key={charity.id}
+                onClick={() => setSelectedCharity(charity.id)}
+                className={`p-3 rounded-lg border text-left transition-colors ${
+                  selectedCharity === charity.id
+                    ? 'bg-cyan-400/10 border-cyan-400/60'
+                    : 'bg-slate-800 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span className={`block text-sm font-medium ${
+                  selectedCharity === charity.id ? 'text-cyan-300' : 'text-slate-300'
+                }`}>
+                  {charity.name}
+                </span>
+                <span className="block text-xs text-slate-500 mt-0.5">{charity.description}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
         <button
           onClick={() => void handleCreateGame()}
-          disabled={creating || !selectedCharity}
+          disabled={creating || (!BETA_MODE && !selectedCharity)}
           className="w-full bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
         >
           {creating ? 'Creating…' : 'Generate Invite Link'}

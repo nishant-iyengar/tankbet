@@ -1,19 +1,24 @@
 import { useState } from 'react';
-import { useSignIn } from '@clerk/clerk-react';
+import { useSignIn, useSignUp } from '@clerk/clerk-react';
 import { isClerkAPIResponseError } from '@clerk/clerk-react/errors';
 import { useNavigate } from 'react-router-dom';
 
 type Step = 'phone' | 'otp';
+type Mode = 'signIn' | 'signUp';
 
 export function LoginPage(): React.JSX.Element {
-  const { isLoaded, signIn, setActive } = useSignIn();
+  const { isLoaded: signInLoaded, signIn, setActive: setSignInActive } = useSignIn();
+  const { isLoaded: signUpLoaded, signUp, setActive: setSignUpActive } = useSignUp();
   const navigate = useNavigate();
 
   const [step, setStep] = useState<Step>('phone');
+  const [mode, setMode] = useState<Mode>('signIn');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const isLoaded = signInLoaded && signUpLoaded;
 
   async function handleSendCode(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
@@ -21,10 +26,28 @@ export function LoginPage(): React.JSX.Element {
     setError('');
     setLoading(true);
     try {
+      // Try sign-in first
       await signIn.create({ strategy: 'phone_code', identifier: phoneNumber });
+      setMode('signIn');
       setStep('otp');
     } catch (err: unknown) {
-      if (isClerkAPIResponseError(err) && err.errors.length > 0) {
+      if (isClerkAPIResponseError(err) && err.errors.some((e) => e.code === 'form_identifier_not_found')) {
+        // New user — create account and send OTP
+        try {
+          await signUp.create({ phoneNumber });
+          await signUp.preparePhoneNumberVerification({ strategy: 'phone_code' });
+          setMode('signUp');
+          setStep('otp');
+        } catch (signUpErr: unknown) {
+          if (isClerkAPIResponseError(signUpErr) && signUpErr.errors.length > 0) {
+            setError(signUpErr.errors[0].longMessage ?? signUpErr.errors[0].message);
+          } else if (signUpErr instanceof Error) {
+            setError(signUpErr.message);
+          } else {
+            setError('Failed to send code. Please try again.');
+          }
+        }
+      } else if (isClerkAPIResponseError(err) && err.errors.length > 0) {
         setError(err.errors[0].longMessage ?? err.errors[0].message);
       } else if (err instanceof Error) {
         setError(err.message);
@@ -42,12 +65,22 @@ export function LoginPage(): React.JSX.Element {
     setError('');
     setLoading(true);
     try {
-      const result = await signIn.attemptFirstFactor({ strategy: 'phone_code', code });
-      if (result.status === 'complete' && result.createdSessionId !== null) {
-        await setActive({ session: result.createdSessionId });
-        navigate('/');
+      if (mode === 'signIn') {
+        const result = await signIn.attemptFirstFactor({ strategy: 'phone_code', code });
+        if (result.status === 'complete' && result.createdSessionId !== null) {
+          await setSignInActive({ session: result.createdSessionId });
+          navigate('/');
+        } else {
+          setError('Sign-in could not be completed. Please try again.');
+        }
       } else {
-        setError('Sign-in could not be completed. Please try again.');
+        const result = await signUp.attemptPhoneNumberVerification({ code });
+        if (result.status === 'complete' && result.createdSessionId !== null) {
+          await setSignUpActive({ session: result.createdSessionId });
+          navigate('/');
+        } else {
+          setError('Verification could not be completed. Please try again.');
+        }
       }
     } catch (err: unknown) {
       if (isClerkAPIResponseError(err) && err.errors.length > 0) {

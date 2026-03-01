@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type Stripe from 'stripe';
 import { stripe } from '../stripe';
 import { prisma } from '../prisma';
+import { env } from '../environment';
 
 export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
   // Disable body parsing for webhook route — Stripe needs raw body
@@ -20,7 +21,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: 'Missing stripe-signature header' });
     }
 
-    const webhookSecret = process.env['STRIPE_WEBHOOK_SECRET'] ?? '';
+    const webhookSecret = env.stripeWebhookSecret;
 
     let event: Stripe.Event;
     try {

@@ -1,8 +1,8 @@
 import { prisma } from '../prisma';
 import { logger } from '../logger';
+import { env } from '../environment';
 
 const PLEDGE_API_URL = 'https://api.pledge.to/v1';
-const PLEDGE_API_KEY = process.env['PLEDGE_API_KEY'] ?? '';
 
 interface PledgeDonationResponse {
   id: string;
@@ -17,7 +17,7 @@ export async function disburseToPledge(
   const response = await fetch(`${PLEDGE_API_URL}/donations`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${PLEDGE_API_KEY}`,
+      'Authorization': `Bearer ${env.pledgeApiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({

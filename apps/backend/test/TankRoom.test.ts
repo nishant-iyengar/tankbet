@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
-import { Client } from 'colyseus.js';
+import { Client } from '@colyseus/sdk';
 import { TankRoom } from '../src/rooms/TankRoom';
 
 // ─── Mock Prisma ─────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ describe('TankRoom — game flow', () => {
 
     // Read phase from server-side room state (avoids schema deserialisation on the test client)
     await new Promise((r) => setTimeout(r, 100));
-    const serverRoom = matchMaker.getRoomById(room.roomId);
+    const serverRoom = matchMaker.getLocalRoomById(room.roomId);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(['countdown', 'playing']).toContain((serverRoom.state as any).phase);
 

@@ -7,6 +7,7 @@
 5. The tsx dev runner does not suppress type errors — type errors are real bugs that must be fixed before considering work done. Always run `pnpm exec tsc --noEmit` (from the relevant package) to verify type safety.
 6. There is no concept of withdrawal or adding funds. Funds are only used when game invites are accepted and automatically disbursed upon game end. Do not add deposit/withdraw UI. The only payment-related UI is a "Disconnect Bank" button (shown in the username dropdown if the user has a connected Stripe bank account).
 7. When debugging, always add console.log statements to trace the issue, check the logs (`logs/web.log`, `logs/backend.log`, `logs/stripe.log`), and iterate. Do not guess at fixes — use logs to confirm what is actually happening before changing code.
+8. When installing a library, always use the latest version (no pinned version specifier unless required). If the latest version cannot be used (e.g. peer dependency conflict, breaking API incompatibility, known bug), ALERT the user explicitly: state which version was installed and exactly why the latest could not be used.
 
 ---
 

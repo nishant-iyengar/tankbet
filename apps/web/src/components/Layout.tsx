@@ -3,6 +3,7 @@ import { useClerk } from '@clerk/clerk-react';
 import { formatCents } from '@tankbet/shared/utils';
 import { useEffect, useState, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
+import { BETA_MODE } from '../config';
 
 interface UserData {
   username: string;
@@ -85,6 +86,11 @@ export function Layout(): React.JSX.Element {
         <header className="h-14 border-b border-slate-700/50 flex items-center justify-end gap-3 px-6 bg-slate-900/60 backdrop-blur-sm sticky top-0 z-40">
           {userData !== null && (
             <>
+              {BETA_MODE && (
+                <span className="text-xs font-semibold text-cyan-400 bg-cyan-400/10 border border-cyan-400/30 px-2 py-0.5 rounded-full mr-1">
+                  Beta
+                </span>
+              )}
               <span className="text-sm text-slate-500 mr-1">
                 <span className="tabular-nums text-slate-200 font-semibold">{formatCents(userData.totalDonatedCents)}</span>
                 {' '}donated
@@ -103,7 +109,7 @@ export function Layout(): React.JSX.Element {
 
                 {showDropdown && (
                   <div className="absolute right-0 mt-2 w-44 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl py-1 z-50">
-                    {userData.hasBankAccount && (
+                    {!BETA_MODE && userData.hasBankAccount && (
                       <button
                         onClick={() => void handleDisconnectBank()}
                         disabled={disconnecting}

@@ -1,29 +1,21 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../prisma';
 import { requireAuth } from '../middleware/auth';
-import { INVITE_EXPIRY_SECONDS, BET_AMOUNTS_CENTS } from '@tankbet/game-engine/constants';
+import { INVITE_EXPIRY_SECONDS } from '@tankbet/game-engine/constants';
 import crypto from 'node:crypto';
-import type { BetAmountCents } from '@tankbet/shared/types';
+import { isBetAmount } from '@tankbet/shared/utils';
 import { matchMaker } from '@colyseus/core';
-
-class HttpError extends Error {
-  constructor(public readonly statusCode: number, message: string) {
-    super(message);
-  }
-}
-
-function isBetAmount(value: number): value is BetAmountCents {
-  return (BET_AMOUNTS_CENTS as readonly number[]).includes(value);
-}
+import { HttpError } from '../errors';
+import { isBeta } from '../environment';
 
 export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/games/create — Create invite
-  interface CreateGameBody { betAmountCents: number; charityId: string }
+  interface CreateGameBody { betAmountCents: number; charityId: string | null }
   fastify.post<{ Body: CreateGameBody }>('/create', { preHandler: requireAuth }, async (req, reply) => {
     const user = req.dbUser;
     const body = req.body;
 
-    if (!isBetAmount(body.betAmountCents)) {
+    if (!isBeta && !isBetAmount(body.betAmountCents)) {
       return reply.status(400).send({ error: 'Invalid bet amount' });
     }
 
@@ -32,30 +24,35 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: 'You already have an active game' });
     }
 
-    // Verify charity exists
-    const charity = await prisma.charity.findUnique({ where: { id: body.charityId } });
-    if (!charity || !charity.active) {
-      return reply.status(400).send({ error: 'Invalid charity' });
+    // Verify charity exists (skip in beta)
+    if (!isBeta) {
+      const charity = body.charityId ? await prisma.charity.findUnique({ where: { id: body.charityId } }) : null;
+      if (!charity || !charity.active) {
+        return reply.status(400).send({ error: 'Invalid charity' });
+      }
     }
 
+    const betAmountCents = isBeta ? 0 : body.betAmountCents;
     const inviteToken = crypto.randomBytes(16).toString('hex');
     const inviteExpiresAt = new Date(Date.now() + INVITE_EXPIRY_SECONDS * 1000);
 
     let game: Awaited<ReturnType<typeof prisma.game.create>>;
     try {
       game = await prisma.$transaction(async (tx) => {
-        const freshUser = await tx.user.findUnique({ where: { id: user.id } });
-        if (!freshUser) throw new HttpError(404, 'User not found');
-        const availableBalance = freshUser.balance - freshUser.reservedBalance;
-        if (availableBalance < body.betAmountCents) {
-          throw new HttpError(400, 'Insufficient balance');
+        if (!isBeta) {
+          const freshUser = await tx.user.findUnique({ where: { id: user.id } });
+          if (!freshUser) throw new HttpError(404, 'User not found');
+          const availableBalance = freshUser.balance - freshUser.reservedBalance;
+          if (availableBalance < betAmountCents) {
+            throw new HttpError(400, 'Insufficient balance');
+          }
         }
 
         const created = await tx.game.create({
           data: {
             creatorId: user.id,
-            betAmountCents: body.betAmountCents,
-            creatorCharityId: body.charityId,
+            betAmountCents,
+            creatorCharityId: isBeta ? null : body.charityId,
             status: 'PENDING_ACCEPTANCE',
             inviteToken,
             inviteExpiresAt,
@@ -65,7 +62,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         await tx.user.update({
           where: { id: user.id },
           data: {
-            reservedBalance: { increment: body.betAmountCents },
+            reservedBalance: isBeta ? undefined : { increment: betAmountCents },
             activeGameId: created.id,
           },
         });
@@ -218,7 +215,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       await tx.user.update({
         where: { id: game.creatorId },
         data: {
-          reservedBalance: { decrement: game.betAmountCents },
+          reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
           activeGameId: null,
         },
       });
@@ -238,6 +235,8 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       include: {
         creator: { select: { id: true, username: true } },
         opponent: { select: { id: true, username: true } },
+        creatorCharity: { select: { id: true, name: true, logoUrl: true } },
+        opponentCharity: { select: { id: true, name: true, logoUrl: true } },
       },
     });
 

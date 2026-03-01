@@ -3,7 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../api/client';
-import { formatCents } from '@tankbet/shared/utils';
+import { formatCents, formatTime } from '@tankbet/shared/utils';
+import { BETA_MODE } from '../config';
 import type { GameInvitePreview, PublicCharity } from '@tankbet/shared/types';
 
 export function InvitePage(): React.JSX.Element {
@@ -58,7 +59,7 @@ export function InvitePage(): React.JSX.Element {
   }, [timeLeft]);
 
   async function handleAccept(): Promise<void> {
-    if (!token || !selectedCharity) return;
+    if (!token || (!BETA_MODE && !selectedCharity)) return;
 
     if (!isSignedIn) {
       navigate('/login');
@@ -69,7 +70,7 @@ export function InvitePage(): React.JSX.Element {
     setError('');
     try {
       const result = await post<{ gameId: string }>(`/api/games/invite/${token}/accept`, {
-        charityId: selectedCharity,
+        charityId: BETA_MODE ? null : selectedCharity,
       });
       navigate(`/game/${result.gameId}`);
     } catch (err) {
@@ -87,10 +88,6 @@ export function InvitePage(): React.JSX.Element {
     } catch {
       navigate('/');
     }
-  }
-
-  function formatTime(seconds: number): string {
-    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   }
 
   if (loading) {
@@ -124,9 +121,11 @@ export function InvitePage(): React.JSX.Element {
           <div className="text-4xl font-bold tabular-nums text-white my-4">
             {formatTime(timeLeft)}
           </div>
-          <p className="text-sm text-slate-400 mb-1">
-            Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
-          </p>
+          {!BETA_MODE && (
+            <p className="text-sm text-slate-400 mb-1">
+              Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
+            </p>
+          )}
           <p className="text-xs text-slate-500 mb-6">Share the invite link with your opponent.</p>
           <button
             onClick={() => void navigator.clipboard.writeText(window.location.href.replace('?creator=true', ''))}
@@ -146,9 +145,11 @@ export function InvitePage(): React.JSX.Element {
           {invite.creatorUsername} wants to play
         </h1>
         <div className="flex items-center gap-3 mb-5">
-          <span className="text-sm text-slate-400">
-            Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
-          </span>
+          {!BETA_MODE && (
+            <span className="text-sm text-slate-400">
+              Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
+            </span>
+          )}
           <span className="text-slate-600">·</span>
           <span className={`text-sm tabular-nums font-medium ${timeLeft <= 30 ? 'text-red-400' : 'text-slate-400'}`}>
             {formatTime(timeLeft)}
@@ -159,29 +160,33 @@ export function InvitePage(): React.JSX.Element {
           <p className="text-red-400 text-sm mb-4">This invite has expired.</p>
         )}
 
-        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Your Charity</p>
-        <div className="grid grid-cols-2 gap-2 mb-5 max-h-52 overflow-y-auto">
-          {charities.map((charity) => (
-            <button
-              key={charity.id}
-              onClick={() => setSelectedCharity(charity.id)}
-              className={`p-2.5 rounded-lg border text-left text-xs transition-colors ${
-                selectedCharity === charity.id
-                  ? 'bg-cyan-400/10 border-cyan-400/60 text-cyan-300'
-                  : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-600'
-              }`}
-            >
-              {charity.name}
-            </button>
-          ))}
-        </div>
+        {!BETA_MODE && (
+          <>
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Your Charity</p>
+            <div className="grid grid-cols-2 gap-2 mb-5 max-h-52 overflow-y-auto">
+              {charities.map((charity) => (
+                <button
+                  key={charity.id}
+                  onClick={() => setSelectedCharity(charity.id)}
+                  className={`p-2.5 rounded-lg border text-left text-xs transition-colors ${
+                    selectedCharity === charity.id
+                      ? 'bg-cyan-400/10 border-cyan-400/60 text-cyan-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-600'
+                  }`}
+                >
+                  {charity.name}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
         <div className="flex gap-2">
           <button
             onClick={() => void handleAccept()}
-            disabled={accepting || !selectedCharity || timeLeft <= 0}
+            disabled={accepting || (!BETA_MODE && !selectedCharity) || timeLeft <= 0}
             className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
           >
             {accepting ? 'Accepting…' : 'Accept'}

@@ -1,37 +1,6 @@
-import type { Client, Room } from 'colyseus.js';
-
-function asStr(v: unknown, fallback = ''): string {
-  return typeof v === 'string' ? v : fallback;
-}
-
-function asNum(v: unknown, fallback = 0): number {
-  return typeof v === 'number' ? v : fallback;
-}
-
-function asBool(v: unknown, fallback = false): boolean {
-  return typeof v === 'boolean' ? v : fallback;
-}
-
-function iterateMap(schema: unknown, cb: (value: Record<string, unknown>, key: string) => void): void {
-  if (!schema || typeof schema !== 'object' || !('forEach' in schema)) return;
-  (schema as { forEach: (cb: (v: unknown, k: string) => void) => void }).forEach((v, k) => {
-    if (v && typeof v === 'object') cb(v as Record<string, unknown>, k);
-  });
-}
-
-function iterateArray(schema: unknown, cb: (value: Record<string, unknown>) => void): void {
-  if (!Array.isArray(schema) && !(schema && typeof schema === 'object' && 'forEach' in schema)) return;
-  if (Array.isArray(schema)) {
-    for (const item of schema) {
-      if (item && typeof item === 'object') cb(item as Record<string, unknown>);
-    }
-  } else {
-    (schema as { forEach: (cb: (v: unknown) => void) => void }).forEach((v) => {
-      if (v && typeof v === 'object') cb(v as Record<string, unknown>);
-    });
-  }
-}
+import type { Client, Room } from '@colyseus/sdk';
 import type { InputState, TankState, BulletState, MissileState } from '@tankbet/game-engine/physics';
+import { shortestAngleDelta } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import type { ActiveEffectData } from '@tankbet/game-engine/powerups';
 import { INTERPOLATION_DELAY_MS } from '@tankbet/game-engine/constants';
@@ -45,7 +14,10 @@ import {
   drawTankPowerupIndicator,
   drawCountdown,
   drawHUD,
+  drawExplosion,
+  EXPLOSION_DURATION_MS,
 } from '@tankbet/game-engine/renderer';
+import { TankRoomState } from '@tankbet/game-engine/schema';
 import { InputHandler } from './InputHandler';
 
 interface ClientTankState {
@@ -73,6 +45,7 @@ interface SnapshotState {
   countdown: number;
   phase: string;
   winnerId: string;
+  roundWinnerId: string;
   lives: Map<string, number>;
 }
 
@@ -81,11 +54,13 @@ interface SnapshotEntry {
   state: SnapshotState;
 }
 
-// Minimal type for the seat reservation returned by the server via matchMaker.reserveSeatFor.
-// consumeSeatReservation() accepts `any`, but we type it for clarity.
+// Flat seat reservation shape from @colyseus/core 0.17 matchMaker.reserveSeatFor
 export interface SeatReservation {
   sessionId: string;
-  room: { roomId: string; [key: string]: unknown };
+  roomId: string;
+  name: string;
+  processId: string;
+  publicAddress?: string;
 }
 
 export class GameEngine {
@@ -102,7 +77,11 @@ export class GameEngine {
   private player2Name = '';
   private betAmountCents = 0;
 
-  private onPhaseChange: ((phase: string, winnerId: string) => void) | null = null;
+  private onPhaseChange: ((phase: string, winnerId: string, roundWinnerId: string) => void) | null = null;
+  private localSessionId = '';
+  private isPractice = false;
+  private explosions: Array<{ x: number; y: number; startTime: number }> = [];
+  private prevTankAlive = new Map<string, boolean>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -112,7 +91,7 @@ export class GameEngine {
     this.inputHandler = new InputHandler();
   }
 
-  setPhaseChangeCallback(cb: (phase: string, winnerId: string) => void): void {
+  setPhaseChangeCallback(cb: (phase: string, winnerId: string, roundWinnerId: string) => void): void {
     this.onPhaseChange = cb;
   }
 
@@ -123,27 +102,36 @@ export class GameEngine {
     player1Name: string,
     player2Name: string,
     betAmountCents: number,
+    practice = false,
   ): Promise<void> {
     this.client = colyseusClient;
     this.playerIndex = playerIndex;
     this.player1Name = player1Name;
     this.player2Name = player2Name;
     this.betAmountCents = betAmountCents;
+    this.isPractice = practice;
 
-    this.room = await this.client.consumeSeatReservation(seatReservation);
+    this.room = await this.client.consumeSeatReservation<TankRoomState>(seatReservation);
+    this.localSessionId = this.room.sessionId;
 
     this.room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
     });
 
-    this.room.onStateChange((state: Record<string, unknown>) => {
-      const rawPhase = state['phase'];
-      const rawCountdown = state['countdown'];
-      const rawTanks = state['tanks'];
-      const tankCount = rawTanks && typeof rawTanks === 'object' && 'size' in rawTanks ? (rawTanks as { size: number }).size : '?';
-      console.log(`[GameEngine] onStateChange phase=${String(rawPhase)} countdown=${String(rawCountdown)} tanks=${String(tankCount)}`);
+    this.room.onStateChange((state: TankRoomState) => {
+      console.log(`[GameEngine] onStateChange phase=${state.phase} countdown=${state.countdown} tanks=${state.tanks.size}`);
       const snapshot = this.parseState(state);
+
+      // Detect alive → dead transitions and spawn explosions
+      snapshot.tanks.forEach((tank, sessionId) => {
+        const wasAlive = this.prevTankAlive.get(sessionId);
+        if (wasAlive === true && !tank.alive) {
+          this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+        }
+        this.prevTankAlive.set(sessionId, tank.alive);
+      });
+
       this.stateBuffer.push({ timestamp: Date.now(), state: snapshot });
 
       if (this.stateBuffer.length > 60) {
@@ -151,7 +139,7 @@ export class GameEngine {
       }
 
       if (this.onPhaseChange) {
-        this.onPhaseChange(snapshot.phase, snapshot.winnerId);
+        this.onPhaseChange(snapshot.phase, snapshot.winnerId, snapshot.roundWinnerId);
       }
     });
 
@@ -162,82 +150,79 @@ export class GameEngine {
     this.startRenderLoop();
   }
 
-  private parseState(raw: Record<string, unknown>): SnapshotState {
+  private parseState(state: TankRoomState): SnapshotState {
     const tanks = new Map<string, ClientTankState>();
-    iterateMap(raw['tanks'], (t, key) => {
-      const rawEffects = t['effects'];
+    state.tanks.forEach((t, key) => {
       const effects: ActiveEffectData[] = [];
-      iterateArray(rawEffects, (e) => {
+      t.effects.forEach((e) => {
         effects.push({
-          type: asStr(e['type']),
-          remainingTime: asNum(e['remainingTime']),
-          remainingAmmo: asNum(e['remainingAmmo']),
+          type: e.type,
+          remainingTime: e.remainingTime,
+          remainingAmmo: e.remainingAmmo,
         });
       });
       tanks.set(key, {
-        id: asStr(t['id']),
-        x: asNum(t['x']),
-        y: asNum(t['y']),
-        angle: asNum(t['angle']),
+        id: t.id,
+        x: t.x,
+        y: t.y,
+        angle: t.angle,
         speed: 0,
-        alive: asBool(t['alive'], true),
+        alive: t.alive,
         effects,
       });
     });
 
     const bullets: BulletState[] = [];
-    iterateArray(raw['bullets'], (b) => {
+    state.bullets.forEach((b) => {
       bullets.push({
-        id: asStr(b['id']),
-        ownerId: asStr(b['ownerId']),
-        x: asNum(b['x']),
-        y: asNum(b['y']),
-        vx: asNum(b['vx']),
-        vy: asNum(b['vy']),
+        id: b.id,
+        ownerId: b.ownerId,
+        x: b.x,
+        y: b.y,
+        vx: b.vx,
+        vy: b.vy,
         age: 0,
       });
     });
 
     const missiles: MissileState[] = [];
-    iterateArray(raw['missiles'], (m) => {
+    state.missiles.forEach((m) => {
       missiles.push({
-        id: asStr(m['id']),
-        ownerId: asStr(m['ownerId']),
-        x: asNum(m['x']),
-        y: asNum(m['y']),
-        vx: asNum(m['vx']),
-        vy: asNum(m['vy']),
-        age: asNum(m['age']),
+        id: m.id,
+        ownerId: m.ownerId,
+        x: m.x,
+        y: m.y,
+        vx: m.vx,
+        vy: m.vy,
+        age: m.age,
         initialTargetId: '',
       });
     });
 
     const powerups: PowerupSnapshot[] = [];
-    iterateArray(raw['powerups'], (p) => {
+    state.powerups.forEach((p) => {
       powerups.push({
-        id: asStr(p['id']),
-        type: asStr(p['type']),
-        x: asNum(p['x']),
-        y: asNum(p['y']),
+        id: p.id,
+        type: p.type,
+        x: p.x,
+        y: p.y,
       });
     });
 
     const lives = new Map<string, number>();
-    const rawLives = raw['lives'];
-    if (rawLives && typeof rawLives === 'object' && 'forEach' in rawLives) {
-      (rawLives as { forEach: (cb: (v: unknown, k: string) => void) => void }).forEach((v, k) => {
-        lives.set(k, asNum(v));
-      });
-    }
+    state.lives.forEach((v, k) => {
+      lives.set(k, v);
+    });
 
     return {
       tanks,
       bullets,
       missiles,
       powerups,
-      countdown: asNum(raw['countdown']),
-      phase: asStr(raw['phase'], 'countdown'),
-      winnerId: asStr(raw['winnerId']),
+      countdown: state.countdown,
+      phase: state.phase,
+      winnerId: state.winnerId,
+      roundWinnerId: state.roundWinnerId,
       lives,
     };
   }
@@ -267,8 +252,22 @@ export class GameEngine {
       }
     }
 
-    if (!before) return this.stateBuffer[this.stateBuffer.length - 1].state;
-    if (!after) return before.state;
+    // Bullets: extrapolate from the most recent snapshot using velocity.
+    // Bullet velocity is constant between wall bounces, so x += vx*dt is accurate
+    // at any frame rate and avoids the interpolation stutter visible at 20–30Hz.
+    const bulletRef = after ?? before;
+    const bullets: BulletState[] = bulletRef
+      ? bulletRef.state.bullets.map((b) => {
+          const dt = (renderTime - bulletRef.timestamp) / 1000;
+          return { ...b, x: b.x + b.vx * dt, y: b.y + b.vy * dt };
+        })
+      : [];
+
+    // No bracketing snapshots — return latest state with extrapolated bullets.
+    if (!before || !after) {
+      const fallback = this.stateBuffer[this.stateBuffer.length - 1].state;
+      return { ...fallback, bullets };
+    }
 
     const total = after.timestamp - before.timestamp;
     const elapsed = renderTime - before.timestamp;
@@ -282,7 +281,7 @@ export class GameEngine {
           id: bTank.id,
           x: bTank.x + (aTank.x - bTank.x) * t,
           y: bTank.y + (aTank.y - bTank.y) * t,
-          angle: bTank.angle + (aTank.angle - bTank.angle) * t,
+          angle: bTank.angle + shortestAngleDelta(aTank.angle, bTank.angle) * t,
           speed: aTank.speed,
           alive: aTank.alive,
           effects: aTank.effects,
@@ -290,22 +289,6 @@ export class GameEngine {
       } else {
         tanks.set(key, bTank);
       }
-    });
-
-    const bullets: BulletState[] = after.state.bullets.map((aBullet) => {
-      const bBullet = before.state.bullets.find((b) => b.id === aBullet.id);
-      if (bBullet) {
-        return {
-          id: aBullet.id,
-          ownerId: aBullet.ownerId,
-          x: bBullet.x + (aBullet.x - bBullet.x) * t,
-          y: bBullet.y + (aBullet.y - bBullet.y) * t,
-          vx: aBullet.vx,
-          vy: aBullet.vy,
-          age: aBullet.age,
-        };
-      }
-      return aBullet;
     });
 
     const missiles: MissileState[] = after.state.missiles.map((aMissile) => {
@@ -333,6 +316,7 @@ export class GameEngine {
       countdown: after.state.countdown,
       phase: after.state.phase,
       winnerId: after.state.winnerId,
+      roundWinnerId: after.state.roundWinnerId,
       lives: after.state.lives,
     };
   }
@@ -345,53 +329,58 @@ export class GameEngine {
       drawMaze(this.ctx, this.mazeSegments);
     }
 
+    const now = Date.now();
     const state = this.getInterpolatedState();
     if (!state) return;
 
-    const now = Date.now();
+    // Client-side prediction disabled: tank position is authoritative from the server.
+    // Previously the local prediction ran updateTank without wall collision, causing
+    // the tank to visually phase through walls before the server correction caught up.
 
-    // Draw powerups
     for (const powerup of state.powerups) {
       drawPowerup(this.ctx, powerup, now);
     }
 
-    // Draw tanks (skip dead tanks, but assign color by order so colors stay consistent)
     const tankColors = ['#4ade80', '#f87171'];
     let colorIdx = 0;
     state.tanks.forEach((tank) => {
       const color = tankColors[colorIdx % 2];
       colorIdx++;
       if (!tank.alive) return;
-      // Cast to TankState for drawTank (it only uses x, y, angle)
       const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
       drawTank(this.ctx, ts, color);
       drawTankPowerupIndicator(this.ctx, tank, tank.effects, now);
     });
 
-    // Draw bullets
     for (const bullet of state.bullets) {
       drawBullet(this.ctx, bullet);
     }
 
-    // Draw missiles
     for (const missile of state.missiles) {
       drawMissile(this.ctx, missile);
     }
 
-    // Draw HUD
-    const livesArr = Array.from(state.lives.values());
-    const p1Lives = livesArr[0] ?? 0;
-    const p2Lives = livesArr[1] ?? 0;
-    drawHUD(
-      this.ctx,
-      width,
-      height,
-      this.player1Name,
-      this.player2Name,
-      p1Lives,
-      p2Lives,
-      this.betAmountCents,
-    );
+    // Draw and prune expired explosions
+    this.explosions = this.explosions.filter((exp) => now - exp.startTime < EXPLOSION_DURATION_MS);
+    for (const exp of this.explosions) {
+      drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime);
+    }
+
+    if (!this.isPractice) {
+      const livesArr = Array.from(state.lives.values());
+      const p1Lives = livesArr[0] ?? 0;
+      const p2Lives = livesArr[1] ?? 0;
+      drawHUD(
+        this.ctx,
+        width,
+        height,
+        this.player1Name,
+        this.player2Name,
+        p1Lives,
+        p2Lives,
+        this.betAmountCents,
+      );
+    }
 
     if (state.phase === 'countdown') {
       drawCountdown(this.ctx, width, height, state.countdown);

@@ -7,9 +7,11 @@ interface FetchOptions {
 }
 
 export async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
+  const headers: Record<string, string> = {};
+
+  if (options.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (options.token) {
     headers['Authorization'] = `Bearer ${options.token}`;
@@ -18,7 +20,7 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
   const response = await fetch(`${API_URL}${path}`, {
     method: options.method ?? 'GET',
     headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     credentials: 'include',
   });
 

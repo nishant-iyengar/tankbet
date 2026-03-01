@@ -3,6 +3,7 @@ import { prisma } from '../prisma';
 import { requireAuth } from '../middleware/auth';
 import { MIN_DEPOSIT_CENTS, WITHDRAWAL_FEE_CENTS } from '@tankbet/game-engine/constants';
 import { stripe } from '../stripe';
+import { env } from '../environment';
 
 export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/payments/setup — Create Stripe Customer for user
@@ -74,7 +75,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
 
     return reply.send({
       clientSecret: setupIntent.client_secret,
-      publishableKey: process.env['STRIPE_PUBLISHABLE_KEY'] ?? '',
+      publishableKey: env.stripePublishableKey,
     });
   });
 

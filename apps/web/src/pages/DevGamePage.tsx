@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Client } from 'colyseus.js';
+import { Client } from '@colyseus/sdk';
 import { GameEngine } from '../game/GameEngine';
 import type { SeatReservation } from '../game/GameEngine';
 import { apiFetch } from '../api/client';
