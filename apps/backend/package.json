@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "dotenv -e ../../.env -o -- node --import=tsx/esm --watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node --import=tsx/esm src/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "prisma generate"
@@ -27,6 +27,7 @@
     "node-cron": "^4.2.1",
     "pg": "^8.19.0",
     "stripe": "^17.5.0",
+    "tsx": "^4.19.0",
     "twilio": "^5.12.2",
     "zod": "^3.24.2"
   },
@@ -35,7 +36,6 @@
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.16.0",
     "prisma": "^7.4.1",
-    "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
