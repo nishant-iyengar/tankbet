@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type Stripe from 'stripe';
-import { stripe } from '../stripe';
+import { requireStripe } from '../stripe';
 import { prisma } from '../prisma';
 import { env } from '../environment';
 
@@ -25,7 +25,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
 
     let event: Stripe.Event;
     try {
-      event = stripe.webhooks.constructEvent(req.body as Buffer, sig, webhookSecret);
+      event = requireStripe().webhooks.constructEvent(req.body as Buffer, sig, webhookSecret);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       fastify.log.error(`Webhook signature verification failed: ${message}`);

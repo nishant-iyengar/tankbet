@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../prisma';
 import { requireAuth } from '../middleware/auth';
 import { MIN_DEPOSIT_CENTS, WITHDRAWAL_FEE_CENTS } from '@tankbet/game-engine/constants';
-import { stripe } from '../stripe';
+import { requireStripe } from '../stripe';
 import { env } from '../environment';
 
 export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
@@ -14,7 +14,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ customerId: user.stripeCustomerId });
     }
 
-    const customer = await stripe.customers.create({
+    const customer = await requireStripe().customers.create({
       metadata: { userId: user.id, clerkId: user.clerkId },
     });
 
@@ -40,7 +40,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: 'Stripe customer not set up. Call /api/payments/setup first.' });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
+    const paymentIntent = await requireStripe().paymentIntents.create({
       amount: body.amountCents,
       currency: 'usd',
       customer: user.stripeCustomerId,
@@ -58,7 +58,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
     // Ensure Stripe customer exists
     let customerId = user.stripeCustomerId;
     if (!customerId) {
-      const customer = await stripe.customers.create({
+      const customer = await requireStripe().customers.create({
         metadata: { userId: user.id, clerkId: user.clerkId },
       });
       customerId = customer.id;
@@ -68,7 +68,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
       });
     }
 
-    const setupIntent = await stripe.setupIntents.create({
+    const setupIntent = await requireStripe().setupIntents.create({
       customer: customerId,
       payment_method_types: ['us_bank_account'],
     });
@@ -90,7 +90,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
     const freshUser = await prisma.user.findUnique({ where: { id: req.dbUser.id } });
     if (!freshUser) return reply.status(404).send({ error: 'User not found' });
 
-    const si = await stripe.setupIntents.retrieve(body.setupIntentId);
+    const si = await requireStripe().setupIntents.retrieve(body.setupIntentId);
     const siCustomerId = typeof si.customer === 'string' ? si.customer : si.customer?.id;
 
     if (!siCustomerId || siCustomerId !== freshUser.stripeCustomerId) {
@@ -118,7 +118,7 @@ export async function paymentRoutes(fastify: FastifyInstance): Promise<void> {
     const user = req.dbUser;
 
     if (user.stripePaymentMethodId) {
-      await stripe.paymentMethods.detach(user.stripePaymentMethodId);
+      await requireStripe().paymentMethods.detach(user.stripePaymentMethodId);
       await prisma.user.update({
         where: { id: user.id },
         data: { stripePaymentMethodId: null },
