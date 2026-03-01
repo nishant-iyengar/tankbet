@@ -79,8 +79,28 @@ function browserConsoleRelay(): Plugin {
   };
 }
 
+function faviconSwap(): Plugin {
+  return {
+    name: 'favicon-swap',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html, ctx) {
+        let favicon = '/favicon.svg';
+        if (ctx.server) {
+          if (process.env['VITE_BETA_MODE'] === 'true') {
+            favicon = '/favicon-beta.svg';
+          }
+        } else {
+          favicon = '/favicon-prod.svg';
+        }
+        return html.replace('/favicon.svg', favicon);
+      },
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [browserConsoleRelay(), react()],
+  plugins: [browserConsoleRelay(), faviconSwap(), react()],
   server: {
     port: 5173,
   },

@@ -6,8 +6,11 @@ import {
   TANK_WIDTH,
   TANK_HEIGHT,
   BULLET_RADIUS,
+  BULLET_LIFETIME_SECONDS,
   WALL_FRICTION,
   CORNER_SHIELD_PADDING,
+  BULLET_FIRE_COOLDOWN_MS,
+  MAX_BULLETS_PER_TANK,
   MISSILE_SPEED,
   MISSILE_HOMING_DELAY_S,
   MISSILE_TURN_SPEED_DEG,
@@ -151,6 +154,12 @@ export function checkBulletTankCollision(bullet: BulletState, tank: TankState): 
   const distSquared = dx * dx + dy * dy;
 
   return distSquared <= BULLET_RADIUS * BULLET_RADIUS;
+}
+
+// Check whether a tank is allowed to fire a new bullet right now.
+// Shared between server and client-side prediction.
+export function canFireBullet(now: number, lastFiredAt: number, currentBulletCount: number): boolean {
+  return (now - lastFiredAt) >= BULLET_FIRE_COOLDOWN_MS && currentBulletCount < MAX_BULLETS_PER_TANK;
 }
 
 export function createBullet(id: string, tank: TankState): BulletState {
@@ -344,12 +353,13 @@ export function reflectBulletAtWall(
   wall: WallSegment,
   hitX: number,
   hitY: number,
+  radius = BULLET_RADIUS,
 ): BulletState {
   let vx = bullet.vx;
   let vy = bullet.vy;
   let x = hitX;
   let y = hitY;
-  const eps = BULLET_RADIUS + 1;
+  const eps = radius + 1;
 
   if (wall.x1 === wall.x2) {
     vx = -vx;
@@ -360,6 +370,31 @@ export function reflectBulletAtWall(
   }
 
   return { ...bullet, x, y, vx, vy };
+}
+
+// Advance a bullet by one tick: move → lifetime check → single wall bounce.
+// Returns null if the bullet has expired.
+export function advanceBullet(
+  bullet: BulletState,
+  dt: number,
+  walls: WallSegment[],
+): BulletState | null {
+  const prevX = bullet.x;
+  const prevY = bullet.y;
+  const updated = updateBullet(bullet, dt);
+
+  if (updated.age >= BULLET_LIFETIME_SECONDS) return null;
+
+  let reflected = updated;
+  for (const wall of walls) {
+    const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, reflected.x, reflected.y, wall);
+    if (crossed) {
+      reflected = reflectBulletAtWall(reflected, wall, hitX, hitY);
+      break; // max 1 bounce per tick
+    }
+  }
+
+  return reflected;
 }
 
 // ---------------------------------------------------------------------------

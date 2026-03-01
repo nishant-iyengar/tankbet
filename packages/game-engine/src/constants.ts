@@ -9,8 +9,8 @@ export const WALL_FRICTION = 1.0;          // fraction of slide speed removed wh
 export const CORNER_SHIELD_PADDING = 4;   // extra px beyond OBB to keep tank away from wall endpoints
 export const TANK_ROTATION_SPEED = 135;   // deg/s
 export const BULLET_SPEED = 184;          // px/s  (50% slower than 368)
-export const MAX_BULLETS_PER_TANK = 8;
-export const BULLET_LIFETIME_SECONDS = 5; // time-based; bounces are infinite
+export const MAX_BULLETS_PER_TANK = 10;
+export const BULLET_LIFETIME_SECONDS = 7; // time-based; bounces are infinite
 export const BULLET_RADIUS = 3;
 export const BARREL_WIDTH = 5;            // px — barrel rectangle height in renderer
 export const WALL_LINE_WIDTH = 2;         // px — wall stroke width in renderer
@@ -38,9 +38,9 @@ export const PLEDGE_FEE_RATE = 0.05;
 // Server
 export const LIVES_PER_GAME = 5;
 export const SERVER_TICK_HZ = 30;
-export const BULLET_FIRE_COOLDOWN_MS = 300; // min ms between shots per tank
+export const BULLET_FIRE_COOLDOWN_MS = 120; // min ms between shots per tank
 export const CLIENT_FPS = 60;
-export const INTERPOLATION_DELAY_MS = 100;
+export const INTERPOLATION_DELAY_MS = 125;
 
 // Powerups
 export const PowerupType = {

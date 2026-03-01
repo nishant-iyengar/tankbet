@@ -1,9 +1,24 @@
 import type { Client, Room } from '@colyseus/sdk';
-import type { InputState, TankState, BulletState, MissileState } from '@tankbet/game-engine/physics';
-import { shortestAngleDelta } from '@tankbet/game-engine/physics';
+import type { InputState, TankState, BulletState, MissileState, Vec2 } from '@tankbet/game-engine/physics';
+import {
+  shortestAngleDelta,
+  updateTank,
+  clampTankToMaze,
+  collideTankWithWalls,
+  collideTankWithEndpoints,
+  extractWallEndpoints,
+  canFireBullet,
+  createBullet,
+  advanceBullet,
+} from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import type { ActiveEffectData } from '@tankbet/game-engine/powerups';
-import { INTERPOLATION_DELAY_MS } from '@tankbet/game-engine/constants';
+import {
+  INTERPOLATION_DELAY_MS,
+  MAZE_COLS,
+  MAZE_ROWS,
+  CELL_SIZE,
+} from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -63,6 +78,13 @@ export interface SeatReservation {
   publicAddress?: string;
 }
 
+const SNAP_THRESHOLD = 50; // px — teleport to server if prediction drifts further
+const RECONCILE_LERP = 0.2; // blend factor toward server position per state update
+const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
+const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
+// Unconfirmed predicted bullets are discarded after this age (server rejected or lost)
+const UNCONFIRMED_BULLET_MAX_AGE_S = 0.5;
+
 export class GameEngine {
   private client: Client | null = null;
   private room: Room | null = null;
@@ -82,6 +104,24 @@ export class GameEngine {
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
   private prevTankAlive = new Map<string, boolean>();
+
+  // Client-side prediction state
+  private predictedTank: TankState | null = null;
+  private wallEndpoints: Vec2[] = [];
+  private lastPredictionTime = 0;
+
+  // Client-side bullet prediction
+  private predictedBullets: BulletState[] = [];
+  private nextLocalBulletSeq = 0;
+  private lastFireTime = 0;
+  private knownServerBulletIds = new Set<string>();
+  // Queue of predicted bullets awaiting server confirmation, oldest first
+  private pendingBulletQueue: BulletState[] = [];
+  // Predicted bullet ID → server bullet ID (established on server confirmation)
+  private predictedToServerId = new Map<string, string>();
+  // Server bullet IDs to suppress in interpolated state after their predicted
+  // bullet has been removed (avoids ghost re-appearance during interpolation delay)
+  private suppressedServerBulletIds = new Map<string, number>(); // serverId → timestamp
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -117,10 +157,16 @@ export class GameEngine {
     this.room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
+      this.wallEndpoints = extractWallEndpoints(data.segments);
+      // Reset bullet prediction state on new maze (new round)
+      this.predictedBullets = [];
+      this.pendingBulletQueue = [];
+      this.knownServerBulletIds.clear();
+      this.predictedToServerId.clear();
+      this.suppressedServerBulletIds.clear();
     });
 
     this.room.onStateChange((state: TankRoomState) => {
-      console.log(`[GameEngine] onStateChange phase=${state.phase} countdown=${state.countdown} tanks=${state.tanks.size}`);
       const snapshot = this.parseState(state);
 
       // Detect alive → dead transitions and spawn explosions
@@ -131,6 +177,96 @@ export class GameEngine {
         }
         this.prevTankAlive.set(sessionId, tank.alive);
       });
+
+      // Server reconciliation for predicted tank
+      const serverLocalTank = snapshot.tanks.get(this.localSessionId);
+      if (serverLocalTank) {
+        if (!this.predictedTank) {
+          // Initialize prediction from first server snapshot
+          this.predictedTank = {
+            id: serverLocalTank.id,
+            x: serverLocalTank.x,
+            y: serverLocalTank.y,
+            angle: serverLocalTank.angle,
+            speed: serverLocalTank.speed,
+          };
+          this.lastPredictionTime = performance.now();
+        } else if (!serverLocalTank.alive) {
+          // Tank died — snap prediction to server so respawn position is correct
+          this.predictedTank = {
+            id: serverLocalTank.id,
+            x: serverLocalTank.x,
+            y: serverLocalTank.y,
+            angle: serverLocalTank.angle,
+            speed: serverLocalTank.speed,
+          };
+        } else {
+          // Reconcile: blend or snap toward server position
+          const dx = serverLocalTank.x - this.predictedTank.x;
+          const dy = serverLocalTank.y - this.predictedTank.y;
+          const errorDist = Math.sqrt(dx * dx + dy * dy);
+
+          if (errorDist > SNAP_THRESHOLD) {
+            // Large desync — teleport
+            this.predictedTank = {
+              ...this.predictedTank,
+              x: serverLocalTank.x,
+              y: serverLocalTank.y,
+              angle: serverLocalTank.angle,
+            };
+          } else {
+            // Gentle lerp toward server
+            this.predictedTank = {
+              ...this.predictedTank,
+              x: this.predictedTank.x + dx * RECONCILE_LERP,
+              y: this.predictedTank.y + dy * RECONCILE_LERP,
+              angle: this.predictedTank.angle + shortestAngleDelta(serverLocalTank.angle, this.predictedTank.angle) * RECONCILE_LERP,
+            };
+          }
+        }
+      }
+
+      // Reconcile predicted bullets with server bullets (same approach as tank).
+      const localTankId = this.predictedTank?.id;
+      const currentServerBulletIds = new Set<string>();
+      for (const b of snapshot.bullets) {
+        currentServerBulletIds.add(b.id);
+        if (!this.knownServerBulletIds.has(b.id) && localTankId && b.ownerId === localTankId) {
+          // New server bullet for our tank — map to oldest unconfirmed prediction
+          const consumed = this.pendingBulletQueue.shift();
+          if (consumed) {
+            this.predictedToServerId.set(consumed.id, b.id);
+          }
+        }
+      }
+      this.knownServerBulletIds = currentServerBulletIds;
+
+      // Nudge each matched predicted bullet toward its server counterpart
+      // (same lerp-toward-server approach as tank reconciliation)
+      const serverBulletMap = new Map<string, BulletState>();
+      for (const b of snapshot.bullets) {
+        serverBulletMap.set(b.id, b);
+      }
+      for (const predicted of this.predictedBullets) {
+        const serverId = this.predictedToServerId.get(predicted.id);
+        if (!serverId) continue;
+        const server = serverBulletMap.get(serverId);
+        if (server) {
+          // Blend position toward server (like tank RECONCILE_LERP)
+          predicted.x += (server.x - predicted.x) * RECONCILE_LERP;
+          predicted.y += (server.y - predicted.y) * RECONCILE_LERP;
+          // Snap velocity to server (handles wall bounces correctly)
+          predicted.vx = server.vx;
+          predicted.vy = server.vy;
+        } else {
+          // Server removed this bullet — suppress the server ID in the
+          // interpolated view for INTERPOLATION_DELAY_MS so it doesn't
+          // ghost-reappear from older snapshots.
+          this.suppressedServerBulletIds.set(serverId, Date.now());
+          this.predictedToServerId.delete(predicted.id);
+          predicted.age = Infinity; // mark for removal in runPrediction
+        }
+      }
 
       this.stateBuffer.push({ timestamp: Date.now(), state: snapshot });
 
@@ -321,6 +457,65 @@ export class GameEngine {
     };
   }
 
+  // Count server-confirmed bullets owned by the local tank from the latest snapshot
+  private countLocalServerBullets(): number {
+    if (!this.predictedTank || this.stateBuffer.length === 0) return 0;
+    const latest = this.stateBuffer[this.stateBuffer.length - 1].state;
+    const tankId = this.predictedTank.id;
+    return latest.bullets.filter((b) => b.ownerId === tankId).length;
+  }
+
+  private runPrediction(dt: number): void {
+    if (!this.predictedTank || this.mazeSegments.length === 0) return;
+
+    const input = this.inputHandler.getKeys();
+    const prevTank = this.predictedTank;
+
+    // Fire every tick while fire is held AND cooldown ready (matches server behavior)
+    const now = performance.now();
+    // Server count already includes confirmed predicted bullets, so only add
+    // unconfirmed ones (pendingBulletQueue) to avoid double-counting.
+    const serverBulletCount = this.countLocalServerBullets();
+    const totalBulletCount = serverBulletCount + this.pendingBulletQueue.length;
+    if (input.fire && canFireBullet(now, this.lastFireTime, totalBulletCount)) {
+      this.lastFireTime = now;
+      const localId = `predicted_${this.nextLocalBulletSeq++}`;
+      const bullet = createBullet(localId, this.predictedTank);
+      this.predictedBullets.push(bullet);
+      this.pendingBulletQueue.push(bullet);
+    }
+
+    // Run the same 4-step physics pipeline the server uses
+    const moved = updateTank(prevTank, { ...input, fire: false }, dt);
+    const clamped = clampTankToMaze(moved, MAZE_WIDTH, MAZE_HEIGHT);
+    const { tank: wallCorrected } = collideTankWithWalls(clamped, prevTank, this.mazeSegments);
+    const final = collideTankWithEndpoints(wallCorrected, this.wallEndpoints);
+    this.predictedTank = final;
+
+    // Simulate predicted bullets using shared advanceBullet (same break-after-first-bounce as server)
+    const survivingBullets = this.predictedBullets
+      .map((bullet) => advanceBullet(bullet, dt, this.mazeSegments))
+      .filter((b): b is BulletState => {
+        if (!b) return false;
+        // Matched bullets live as long as their server counterpart (removed in onStateChange)
+        if (this.predictedToServerId.has(b.id)) return true;
+        // Unmatched: discard if server hasn't confirmed in time
+        return b.age < UNCONFIRMED_BULLET_MAX_AGE_S;
+      });
+
+    // Clean up pendingBulletQueue entries whose predicted bullet was removed
+    const survivingIds = new Set(survivingBullets.map((b) => b.id));
+    this.pendingBulletQueue = this.pendingBulletQueue.filter((b) => survivingIds.has(b.id));
+    // Clean up stale mappings
+    for (const predictedId of this.predictedToServerId.keys()) {
+      if (!survivingIds.has(predictedId)) {
+        this.predictedToServerId.delete(predictedId);
+      }
+    }
+
+    this.predictedBullets = survivingBullets;
+  }
+
   private draw(): void {
     const { width, height } = this.canvas;
     clearCanvas(this.ctx, width, height);
@@ -333,9 +528,16 @@ export class GameEngine {
     const state = this.getInterpolatedState();
     if (!state) return;
 
-    // Client-side prediction disabled: tank position is authoritative from the server.
-    // Previously the local prediction ran updateTank without wall collision, causing
-    // the tank to visually phase through walls before the server correction caught up.
+    // Run client-side prediction for local tank and bullets
+    const perfNow = performance.now();
+    if (this.lastPredictionTime === 0) {
+      this.lastPredictionTime = perfNow;
+    }
+    const dt = (perfNow - this.lastPredictionTime) / 1000;
+    this.lastPredictionTime = perfNow;
+    if (dt > 0 && dt <= 0.1) {
+      this.runPrediction(dt);
+    }
 
     for (const powerup of state.powerups) {
       drawPowerup(this.ctx, powerup, now);
@@ -343,16 +545,39 @@ export class GameEngine {
 
     const tankColors = ['#4ade80', '#f87171'];
     let colorIdx = 0;
-    state.tanks.forEach((tank) => {
+    state.tanks.forEach((tank, sessionId) => {
       const color = tankColors[colorIdx % 2];
       colorIdx++;
       if (!tank.alive) return;
-      const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
-      drawTank(this.ctx, ts, color);
+
+      // Use predicted position for the local tank, interpolated for remote tanks
+      if (sessionId === this.localSessionId && this.predictedTank) {
+        drawTank(this.ctx, this.predictedTank, color);
+      } else {
+        const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
+        drawTank(this.ctx, ts, color);
+      }
       drawTankPowerupIndicator(this.ctx, tank, tank.effects, now);
     });
 
+    // Draw server bullets, skipping those that have a matched predicted bullet
+    // or are suppressed (recently removed but still in interpolated state)
+    const matchedServerIds = new Set(this.predictedToServerId.values());
+
+    // Expire old suppression entries
+    const suppressionCutoff = Date.now() - INTERPOLATION_DELAY_MS * 2;
+    for (const [id, ts] of this.suppressedServerBulletIds) {
+      if (ts < suppressionCutoff) this.suppressedServerBulletIds.delete(id);
+    }
+
     for (const bullet of state.bullets) {
+      if (matchedServerIds.has(bullet.id)) continue;
+      if (this.suppressedServerBulletIds.has(bullet.id)) continue;
+      drawBullet(this.ctx, bullet);
+    }
+
+    // Draw predicted bullets (already blended toward server in onStateChange)
+    for (const bullet of this.predictedBullets) {
       drawBullet(this.ctx, bullet);
     }
 
