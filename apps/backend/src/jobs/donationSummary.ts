@@ -37,7 +37,7 @@ function buildDonationSummaryMessage(
     breakdownLines,
     '',
     `These donations may be tax-deductible under 501(c)(3).`,
-    `Visit tankbet.com/tax-exemption for details and receipts.`,
+    `Visit tankbet.dev/tax-exemption for details and receipts.`,
     '',
     `Tax filing deadline: April 15, ${fiscalYear + 1}`,
   ].join('\n');

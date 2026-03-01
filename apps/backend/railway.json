@@ -2,11 +2,11 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "RAILPACK",
-    "buildCommand": "pnpm install && pnpm build"
+    "buildCommand": "pnpm --filter @tankbet/backend build"
   },
   "deploy": {
-    "startCommand": "pnpm start",
-    "preDeployCommand": "pnpm prisma migrate deploy",
+    "startCommand": "pnpm --filter @tankbet/backend start",
+    "preDeployCommand": "pnpm --filter @tankbet/backend exec prisma migrate deploy",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ALWAYS",

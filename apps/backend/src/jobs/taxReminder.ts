@@ -42,7 +42,7 @@ export async function runTaxReminderJob(): Promise<void> {
       const formattedAmount = formatCents(totalCents);
       const message =
         `TankBet: You've donated ${formattedAmount} to charity so far in ${year} — ` +
-        `potentially tax-deductible under 501(c)(3). Visit tankbet.com/tax-exemption for details.`;
+        `potentially tax-deductible under 501(c)(3). Visit tankbet.dev/tax-exemption for details.`;
 
       await sendSms(primaryPhone.phoneNumber, message);
       logger.info({ userId: row.userId, formattedAmount }, 'Tax reminder SMS sent');
