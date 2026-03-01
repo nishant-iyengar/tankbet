@@ -33,7 +33,9 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     const betAmountCents = isBeta ? 0 : body.betAmountCents;
-    const inviteToken = crypto.randomBytes(16).toString('hex');
+    const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const tokenBytes = crypto.randomBytes(6);
+    const inviteToken = Array.from(tokenBytes, (b) => TOKEN_CHARS[b % TOKEN_CHARS.length]!).join('');
     const inviteExpiresAt = new Date(Date.now() + INVITE_EXPIRY_SECONDS * 1000);
 
     let game: Awaited<ReturnType<typeof prisma.game.create>>;
@@ -137,19 +139,23 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: 'You already have an active game' });
     }
 
-    // Verify charity
-    const charity = await prisma.charity.findUnique({ where: { id: body.charityId } });
-    if (!charity || !charity.active) {
-      return reply.status(400).send({ error: 'Invalid charity' });
+    // Verify charity (skip in beta)
+    if (!isBeta) {
+      const charity = await prisma.charity.findUnique({ where: { id: body.charityId } });
+      if (!charity || !charity.active) {
+        return reply.status(400).send({ error: 'Invalid charity' });
+      }
     }
 
     try {
       await prisma.$transaction(async (tx) => {
-        const freshUser = await tx.user.findUnique({ where: { id: user.id } });
-        if (!freshUser) throw new HttpError(404, 'User not found');
-        const availableBalance = freshUser.balance - freshUser.reservedBalance;
-        if (availableBalance < game.betAmountCents) {
-          throw new HttpError(400, 'Insufficient balance');
+        if (!isBeta) {
+          const freshUser = await tx.user.findUnique({ where: { id: user.id } });
+          if (!freshUser) throw new HttpError(404, 'User not found');
+          const availableBalance = freshUser.balance - freshUser.reservedBalance;
+          if (availableBalance < game.betAmountCents) {
+            throw new HttpError(400, 'Insufficient balance');
+          }
         }
 
         await tx.game.update({
@@ -220,6 +226,31 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         },
       });
     });
+
+    return reply.send({ success: true });
+  });
+
+  // POST /api/games/invite/:token/cancel — Creator cancels their own pending invite
+  fastify.post<{ Params: InviteParams }>('/invite/:token/cancel', { preHandler: requireAuth }, async (req, reply) => {
+    const user = req.dbUser;
+    const params = req.params;
+
+    const game = await prisma.game.findUnique({ where: { inviteToken: params.token } });
+
+    if (!game) return reply.status(404).send({ error: 'Invite not found' });
+    if (game.creatorId !== user.id) return reply.status(403).send({ error: 'Not the creator' });
+    if (game.status !== 'PENDING_ACCEPTANCE') return reply.status(400).send({ error: 'Invite is not pending' });
+
+    await prisma.$transaction([
+      prisma.game.update({ where: { id: game.id }, data: { status: 'EXPIRED' } }),
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
+          activeGameId: null,
+        },
+      }),
+    ]);
 
     return reply.send({ success: true });
   });

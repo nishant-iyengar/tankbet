@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../hooks/useApi';
@@ -15,11 +15,22 @@ export function InvitePage(): React.JSX.Element {
   const { get, post } = useApi();
   const navigate = useNavigate();
 
+  const inviteLink = token ? `${window.location.origin}/invite/${token}` : '';
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyLink = useCallback(() => {
+    navigator.clipboard.writeText(inviteLink).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => undefined);
+  }, [inviteLink]);
+
   const [invite, setInvite] = useState<GameInvitePreview | null>(null);
   const [charities, setCharities] = useState<PublicCharity[]>([]);
   const [selectedCharity, setSelectedCharity] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState(false);
+  const [cancellingInvite, setCancellingInvite] = useState(false);
   const [error, setError] = useState('');
   const [timeLeft, setTimeLeft] = useState(0);
 
@@ -62,7 +73,7 @@ export function InvitePage(): React.JSX.Element {
     if (!token || (!BETA_MODE && !selectedCharity)) return;
 
     if (!isSignedIn) {
-      navigate('/login');
+      navigate(`/login?redirect=${encodeURIComponent(`/invite/${token}`)}`);
       return;
     }
 
@@ -77,6 +88,17 @@ export function InvitePage(): React.JSX.Element {
       setError(err instanceof Error ? err.message : 'Failed to accept invite');
     } finally {
       setAccepting(false);
+    }
+  }
+
+  async function handleCancelInvite(): Promise<void> {
+    if (!token) return;
+    setCancellingInvite(true);
+    try {
+      await post(`/api/games/invite/${token}/cancel`);
+      navigate('/');
+    } catch {
+      setCancellingInvite(false);
     }
   }
 
@@ -126,12 +148,34 @@ export function InvitePage(): React.JSX.Element {
               Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
             </p>
           )}
-          <p className="text-xs text-slate-500 mb-6">Share the invite link with your opponent.</p>
+          <p className="text-xs text-slate-500 mb-3">Share the invite link with your opponent.</p>
+          <div className="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
+            <span className="flex-1 px-3 py-2.5 text-xs text-slate-400 truncate select-all font-mono">
+              {inviteLink}
+            </span>
+            <button
+              onClick={handleCopyLink}
+              className="px-3 py-2.5 border-l border-slate-700 text-slate-400 hover:text-cyan-400 hover:bg-slate-700/50 transition-colors shrink-0"
+              title="Copy link"
+            >
+              {copied ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              )}
+            </button>
+          </div>
           <button
-            onClick={() => void navigator.clipboard.writeText(window.location.href.replace('?creator=true', ''))}
-            className="bg-cyan-400 text-slate-900 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-cyan-300 transition-colors"
+            onClick={() => void handleCancelInvite()}
+            disabled={cancellingInvite}
+            className="mt-4 w-full border border-slate-700 text-slate-500 hover:border-red-500/50 hover:text-red-400 text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-40 disabled:pointer-events-none"
           >
-            Copy Link
+            {cancellingInvite ? 'Cancelling…' : 'Cancel Invite'}
           </button>
         </div>
       </div>

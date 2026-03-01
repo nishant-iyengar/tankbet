@@ -33,6 +33,38 @@ export interface GameInvitePreview {
   status: GameStatus;
 }
 
+export interface ActiveGameInfo {
+  gameId: string;
+  inviteToken: string;
+  status: 'PENDING_ACCEPTANCE' | 'IN_PROGRESS';
+}
+
+export interface GameHistoryEntry {
+  id: string;
+  opponentUsername: string;
+  betAmountCents: number;
+  charityName: string;
+  charityId: string;
+  result: 'WON' | 'LOST' | null;
+  donationAmountCents: number | null;
+  durationSeconds: number | null;
+  status: GameStatus;
+  endedAt: string | null;
+  createdAt: string;
+}
+
+export interface GameHistoryFilters {
+  status?: GameStatus;
+  result?: 'WON' | 'LOST';
+  charityId?: string;
+}
+
+export interface GameHistoryResponse {
+  entries: GameHistoryEntry[];
+  nextCursor: string | null;
+  charities: Array<{ id: string; name: string }>;
+}
+
 export interface DonationHistoryEntry {
   gameId: string;
   role: ContributionRole;

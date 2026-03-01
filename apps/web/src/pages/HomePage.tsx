@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '@tankbet/shared/utils';
@@ -7,10 +7,17 @@ import { BankSetupModal } from '../components/BankSetupModal';
 import { BETA_MODE } from '../config';
 import type { BetAmountCents, PublicCharity } from '@tankbet/shared/types';
 
+interface ActiveGameInfo {
+  gameId: string;
+  inviteToken: string;
+  status: 'PENDING_ACCEPTANCE' | 'IN_PROGRESS';
+}
+
 interface UserData {
   username: string;
   balance: number;
   hasBankAccount: boolean;
+  activeGame: ActiveGameInfo | null;
 }
 
 export function HomePage(): React.JSX.Element {
@@ -23,29 +30,24 @@ export function HomePage(): React.JSX.Element {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [showBankModal, setShowBankModal] = useState(false);
-  const [toast, setToast] = useState('');
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshUser = useCallback(() => {
-    void get<UserData>('/api/users/me').then(setUser);
-  }, [get]);
+    void get<UserData>('/api/users/me').then((userData) => {
+      setUser(userData);
+      if (userData.activeGame) {
+        if (userData.activeGame.status === 'PENDING_ACCEPTANCE') {
+          navigate(`/invite/${userData.activeGame.inviteToken}?creator=true`);
+        } else {
+          navigate(`/game/${userData.activeGame.gameId}`);
+        }
+      }
+    });
+  }, [get, navigate]);
 
   useEffect(() => {
     refreshUser();
     void get<{ charities: PublicCharity[] }>('/api/charities').then((r) => setCharities(r.charities));
   }, [get, refreshUser]);
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
-    };
-  }, []);
-
-  function showToast(message: string): void {
-    if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
-    setToast(message);
-    toastTimerRef.current = setTimeout(() => setToast(''), 2500);
-  }
 
   async function createGame(): Promise<void> {
     if (!BETA_MODE && !selectedCharity) {
@@ -60,14 +62,7 @@ export function HomePage(): React.JSX.Element {
         betAmountCents: BETA_MODE ? 0 : selectedBet,
         charityId: BETA_MODE ? null : selectedCharity,
       });
-      const link = `${window.location.origin}/invite/${result.inviteToken}`;
-      await navigator.clipboard.writeText(link);
-      showToast('Invite link copied!');
-      setTimeout(() => {
-        if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
-        setToast('');
-        navigate(`/invite/${result.inviteToken}?creator=true`);
-      }, 1200);
+      navigate(`/invite/${result.inviteToken}?creator=true`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create game');
     } finally {
@@ -101,7 +96,9 @@ export function HomePage(): React.JSX.Element {
       </div>
 
       <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6">
-        <h2 className="text-base font-semibold text-white mb-5">New Game</h2>
+        <h2 className="text-base font-semibold text-white mb-1">New Game</h2>
+        {BETA_MODE && <p className="text-xs text-slate-500 mb-5">Preview mode — betting disabled</p>}
+        {!BETA_MODE && <div className="mb-5" />}
 
         {/* Bet chip selector */}
         <div className={BETA_MODE ? 'opacity-40 pointer-events-none' : ''}>
@@ -176,11 +173,6 @@ export function HomePage(): React.JSX.Element {
         />
       )}
 
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-700 text-slate-100 text-sm px-5 py-3 rounded-xl shadow-2xl z-50 pointer-events-none">
-          {toast}
-        </div>
-      )}
     </div>
   );
 }

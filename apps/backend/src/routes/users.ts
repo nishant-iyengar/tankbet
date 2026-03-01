@@ -41,12 +41,25 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /api/users/me — Fetch current user profile + balance
   fastify.get('/me', { preHandler: requireAuth }, async (req, reply) => {
     const user = req.dbUser;
+
+    let activeGame: { gameId: string; inviteToken: string; status: 'PENDING_ACCEPTANCE' | 'IN_PROGRESS' } | null = null;
+    if (user.activeGameId) {
+      const game = await prisma.game.findUnique({
+        where: { id: user.activeGameId },
+        select: { id: true, inviteToken: true, status: true },
+      });
+      if (game && (game.status === 'PENDING_ACCEPTANCE' || game.status === 'IN_PROGRESS')) {
+        activeGame = { gameId: game.id, inviteToken: game.inviteToken, status: game.status };
+      }
+    }
+
     return reply.send({
       id: user.id,
       username: user.username,
       balance: user.balance - user.reservedBalance,
       totalDonatedCents: user.totalDonatedCents,
       hasBankAccount: user.stripePaymentMethodId !== null,
+      activeGame,
     });
   });
 
@@ -69,6 +82,108 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     });
 
     return reply.send({ success: true });
+  });
+
+  // GET /api/users/game-history — Paginated game history with filters
+  interface GameHistoryQuery { cursor?: string; limit?: string; status?: string; result?: string; charityId?: string }
+  fastify.get<{ Querystring: GameHistoryQuery }>('/game-history', { preHandler: requireAuth }, async (req, reply) => {
+    const user = req.dbUser;
+    const query = req.query;
+    const limit = Math.min(Number(query.limit) || 20, 50);
+
+    // Build where clause: user is creator OR opponent
+    const userFilter = { OR: [{ creatorId: user.id }, { opponentId: user.id }] };
+
+    const statusFilter = query.status ? { status: query.status as 'PENDING_ACCEPTANCE' | 'IN_PROGRESS' | 'COMPLETED' | 'FORFEITED' | 'REJECTED' | 'EXPIRED' } : {};
+
+    const charityFilter = query.charityId
+      ? { OR: [{ creatorCharityId: query.charityId }, { opponentCharityId: query.charityId }] }
+      : {};
+
+    // Result filter: WON or LOST relative to current user
+    let resultFilter = {};
+    if (query.result === 'WON') {
+      resultFilter = { winnerId: user.id };
+    } else if (query.result === 'LOST') {
+      resultFilter = { loserId: user.id };
+    }
+
+    const where = { AND: [userFilter, statusFilter, charityFilter, resultFilter] };
+
+    const games = await prisma.game.findMany({
+      where,
+      include: {
+        creator: { select: { username: true } },
+        opponent: { select: { username: true } },
+        creatorCharity: { select: { id: true, name: true } },
+        opponentCharity: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+    });
+
+    const hasMore = games.length > limit;
+    const items = hasMore ? games.slice(0, limit) : games;
+
+    const entries = items.map((g) => {
+      const isCreator = g.creatorId === user.id;
+      const opponentUsername = isCreator
+        ? (g.opponent?.username ?? 'Unknown')
+        : g.creator.username;
+      const charity = isCreator ? g.creatorCharity : g.opponentCharity;
+
+      let result: 'WON' | 'LOST' | null = null;
+      if (g.winnerId === user.id) result = 'WON';
+      else if (g.loserId === user.id) result = 'LOST';
+
+      return {
+        id: g.id,
+        opponentUsername,
+        betAmountCents: g.betAmountCents,
+        charityName: charity?.name ?? '',
+        charityId: charity?.id ?? '',
+        result,
+        donationAmountCents: g.betAmountCents,
+        durationSeconds: g.durationSeconds ?? null,
+        status: g.status,
+        endedAt: g.endedAt?.toISOString() ?? null,
+        createdAt: g.createdAt.toISOString(),
+      };
+    });
+
+    // Only fetch charities for filter dropdown on first page (no cursor)
+    let charities: Array<{ id: string; name: string }> = [];
+    if (!query.cursor) {
+      const userGames = await prisma.game.findMany({
+        where: { OR: [{ creatorId: user.id }, { opponentId: user.id }] },
+        select: {
+          creatorCharityId: true,
+          opponentCharityId: true,
+          creatorId: true,
+        },
+      });
+
+      const charityIds = new Set<string>();
+      for (const g of userGames) {
+        const relevantCharityId = g.creatorId === user.id ? g.creatorCharityId : g.opponentCharityId;
+        if (relevantCharityId) charityIds.add(relevantCharityId);
+      }
+
+      if (charityIds.size > 0) {
+        charities = await prisma.charity.findMany({
+          where: { id: { in: [...charityIds] } },
+          select: { id: true, name: true },
+          orderBy: { name: 'asc' },
+        });
+      }
+    }
+
+    return reply.send({
+      entries,
+      nextCursor: hasMore ? items[items.length - 1].id : null,
+      charities,
+    });
   });
 
   // GET /api/users/donation-history — Paginated donation history

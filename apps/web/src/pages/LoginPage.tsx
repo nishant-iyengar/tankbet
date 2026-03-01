@@ -1,15 +1,26 @@
-import { useState } from 'react';
-import { useSignIn, useSignUp } from '@clerk/clerk-react';
+import { useState, useEffect } from 'react';
+import { useSignIn, useSignUp, useAuth } from '@clerk/clerk-react';
 import { isClerkAPIResponseError } from '@clerk/clerk-react/errors';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+
 
 type Step = 'phone' | 'otp';
 type Mode = 'signIn' | 'signUp';
 
 export function LoginPage(): React.JSX.Element {
+  const { isSignedIn } = useAuth();
   const { isLoaded: signInLoaded, signIn, setActive: setSignInActive } = useSignIn();
   const { isLoaded: signUpLoaded, signUp, setActive: setSignUpActive } = useSignUp();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Navigate only after Clerk's isSignedIn state has fully propagated
+  useEffect(() => {
+    if (isSignedIn) {
+      const redirect = searchParams.get('redirect');
+      navigate(redirect ?? '/');
+    }
+  }, [isSignedIn, navigate, searchParams]);
 
   const [step, setStep] = useState<Step>('phone');
   const [mode, setMode] = useState<Mode>('signIn');
@@ -69,7 +80,6 @@ export function LoginPage(): React.JSX.Element {
         const result = await signIn.attemptFirstFactor({ strategy: 'phone_code', code });
         if (result.status === 'complete' && result.createdSessionId !== null) {
           await setSignInActive({ session: result.createdSessionId });
-          navigate('/');
         } else {
           setError('Sign-in could not be completed. Please try again.');
         }
@@ -77,7 +87,6 @@ export function LoginPage(): React.JSX.Element {
         const result = await signUp.attemptPhoneNumberVerification({ code });
         if (result.status === 'complete' && result.createdSessionId !== null) {
           await setSignUpActive({ session: result.createdSessionId });
-          navigate('/');
         } else {
           setError('Verification could not be completed. Please try again.');
         }

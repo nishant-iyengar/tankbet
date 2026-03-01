@@ -148,6 +148,7 @@ export function GamePage(): React.JSX.Element {
   const [myUserId, setMyUserId] = useState('');
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [error, setError] = useState('');
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   const isMobile = useMobile();
 
@@ -193,6 +194,15 @@ export function GamePage(): React.JSX.Element {
       setError(err instanceof Error ? err.message : 'Failed to connect');
     }
   }, [id, get]);
+
+  function handleLeaveConfirm(): void {
+    setShowLeaveModal(false);
+    if (engineRef.current) {
+      engineRef.current.forfeit();
+      engineRef.current = null;
+    }
+    navigate('/');
+  }
 
   useEffect(() => {
     if (isMobile || !id) return;
@@ -247,6 +257,14 @@ export function GamePage(): React.JSX.Element {
         height={MAZE_ROWS * CELL_SIZE}
         className="block"
       />
+      {phase !== 'ended' && phase !== 'loading' && (
+        <button
+          onClick={() => setShowLeaveModal(true)}
+          className="absolute top-4 right-4 border border-slate-700 text-slate-500 hover:border-red-500/50 hover:text-red-400 text-xs px-3 py-1.5 rounded-lg transition-colors z-10"
+        >
+          Leave Room
+        </button>
+      )}
       {(phase === 'loading' || phase === 'connecting' || phase === 'waiting') && (
         <div className="absolute text-slate-400 text-sm">
           {phase === 'loading' ? 'Loading game…' : phase === 'connecting' ? 'Connecting…' : 'Waiting for opponent…'}
@@ -273,6 +291,32 @@ export function GamePage(): React.JSX.Element {
           game={gameData}
           opponentUsername={opponentUsername}
         />
+      )}
+      {showLeaveModal && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-50">
+          <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 w-80 text-center shadow-2xl">
+            <p className="text-white font-semibold mb-2">Leave Room?</p>
+            <p className="text-slate-400 text-sm mb-6">
+              {phase === 'playing' || phase === 'countdown' || phase === 'resolving'
+                ? 'Leaving an active game forfeits the match. Your opponent wins.'
+                : 'Are you sure you want to leave?'}
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLeaveModal(false)}
+                className="flex-1 border border-slate-600 text-slate-300 py-2.5 rounded-lg text-sm font-medium hover:border-slate-500 hover:text-white transition-colors"
+              >
+                Stay
+              </button>
+              <button
+                onClick={handleLeaveConfirm}
+                className="flex-1 bg-red-500/20 border border-red-500/50 text-red-400 hover:bg-red-500/30 py-2.5 rounded-lg text-sm font-medium transition-colors"
+              >
+                Leave
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

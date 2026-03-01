@@ -391,6 +391,11 @@ export class GameEngine {
     this.mazeSegments = segments;
   }
 
+  forfeit(): void {
+    this.room?.send('forfeit');
+    this.destroy();
+  }
+
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);

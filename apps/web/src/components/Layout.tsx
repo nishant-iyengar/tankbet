@@ -45,6 +45,7 @@ export function Layout(): React.JSX.Element {
     { label: 'Practice', path: '/practice' },
     { label: 'Rules',    path: '/rules' },
     { label: 'Tax Exemption', path: '/tax-exemption' },
+    { label: 'History', path: '/history' },
   ];
 
   return (
@@ -95,40 +96,40 @@ export function Layout(): React.JSX.Element {
                 <span className="tabular-nums text-slate-200 font-semibold">{formatCents(userData.totalDonatedCents)}</span>
                 {' '}donated
               </span>
-
-              <div className="relative">
-                <button
-                  onClick={() => setShowDropdown(!showDropdown)}
-                  className="text-sm font-medium text-slate-300 hover:text-white transition-colors flex items-center gap-1.5"
-                >
-                  {userData.username}
-                  <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-
-                {showDropdown && (
-                  <div className="absolute right-0 mt-2 w-44 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl py-1 z-50">
-                    {!BETA_MODE && userData.hasBankAccount && (
-                      <button
-                        onClick={() => void handleDisconnectBank()}
-                        disabled={disconnecting}
-                        className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-50 transition-colors"
-                      >
-                        {disconnecting ? 'Disconnecting…' : 'Disconnect Bank'}
-                      </button>
-                    )}
-                    <button
-                      onClick={() => void signOut()}
-                      className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
-                    >
-                      Log out
-                    </button>
-                  </div>
-                )}
-              </div>
             </>
           )}
+
+          <div className="relative">
+            <button
+              onClick={() => setShowDropdown(!showDropdown)}
+              className="text-sm font-medium text-slate-300 hover:text-white transition-colors flex items-center gap-1.5"
+            >
+              {userData !== null && <span>{userData.username}</span>}
+              <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showDropdown && (
+              <div className="absolute right-0 mt-2 w-44 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl py-1 z-50">
+                {userData !== null && !BETA_MODE && userData.hasBankAccount && (
+                  <button
+                    onClick={() => void handleDisconnectBank()}
+                    disabled={disconnecting}
+                    className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-50 transition-colors"
+                  >
+                    {disconnecting ? 'Disconnecting…' : 'Disconnect Bank'}
+                  </button>
+                )}
+                <button
+                  onClick={() => void signOut()}
+                  className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+                >
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
         </header>
 
         <main className="p-8">

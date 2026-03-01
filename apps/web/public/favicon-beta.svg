@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Dark background tile -->
+  <rect width="32" height="32" rx="6" fill="#0a0e1a"/>
+
+  <!-- Tracks (left & right) — green tint for beta -->
+  <rect x="3"  y="9" width="4" height="14" rx="2" fill="#14532d"/>
+  <rect x="25" y="9" width="4" height="14" rx="2" fill="#14532d"/>
+
+  <!-- Tank body -->
+  <rect x="7" y="11" width="18" height="10" rx="2" fill="#4ade80"/>
+
+  <!-- Barrel -->
+  <rect x="14.5" y="4" width="3" height="10" rx="1.5" fill="#4ade80"/>
+
+  <!-- Turret -->
+  <circle cx="16" cy="16" r="4.5" fill="#166534"/>
+</svg>

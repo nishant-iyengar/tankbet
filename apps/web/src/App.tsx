@@ -12,6 +12,7 @@ import { InvitePage } from './pages/InvitePage';
 import { GamePage } from './pages/GamePage';
 import { LoginPage } from './pages/LoginPage';
 import { TaxExemptionPage } from './pages/TaxExemptionPage';
+import { HistoryPage } from './pages/HistoryPage';
 import { DevGamePage } from './pages/DevGamePage';
 import { useMobile } from './hooks/useMobile';
 
@@ -25,8 +26,8 @@ export function App(): React.JSX.Element {
 
   if (!isLoaded) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-primary-500 text-xl">Loading...</div>
+      <div className="flex items-center justify-center h-screen bg-[#0a0e1a]">
+        <div className="w-9 h-9 rounded-full border-2 border-slate-700 border-t-cyan-400 animate-spin" />
       </div>
     );
   }
@@ -46,6 +47,7 @@ export function App(): React.JSX.Element {
           <Route path="/practice" element={<PracticePage />} />
           <Route path="/rules" element={<RulesPage />} />
           <Route path="/tax-exemption" element={<TaxExemptionPage />} />
+          <Route path="/history" element={<HistoryPage />} />
           <Route path="/donations" element={<DonationsPage />} />
         </Route>
         <Route path="/game/:id" element={<GamePage />} />
