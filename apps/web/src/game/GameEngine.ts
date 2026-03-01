@@ -229,14 +229,36 @@ export class GameEngine {
       // Reconcile predicted bullets with server bullets (same approach as tank).
       const localTankId = this.predictedTank?.id;
       const currentServerBulletIds = new Set<string>();
+
+      // Collect new server bullets for our tank this update
+      const newLocalServerBullets: BulletState[] = [];
       for (const b of snapshot.bullets) {
         currentServerBulletIds.add(b.id);
         if (!this.knownServerBulletIds.has(b.id) && localTankId && b.ownerId === localTankId) {
-          // New server bullet for our tank — map to oldest unconfirmed prediction
-          const consumed = this.pendingBulletQueue.shift();
-          if (consumed) {
-            this.predictedToServerId.set(consumed.id, b.id);
+          newLocalServerBullets.push(b);
+        }
+      }
+
+      // Match new server bullets to predicted bullets by proximity (not queue
+      // order) — handles timing mismatches when client/server fire rates diverge.
+      const unmatchedPredicted = new Set(this.pendingBulletQueue.map((b) => b.id));
+      for (const serverBullet of newLocalServerBullets) {
+        let bestId: string | null = null;
+        let bestDistSq = Infinity;
+        for (const predicted of this.predictedBullets) {
+          if (!unmatchedPredicted.has(predicted.id)) continue;
+          const dx = predicted.x - serverBullet.x;
+          const dy = predicted.y - serverBullet.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestId = predicted.id;
           }
+        }
+        if (bestId !== null) {
+          this.predictedToServerId.set(bestId, serverBullet.id);
+          unmatchedPredicted.delete(bestId);
+          this.pendingBulletQueue = this.pendingBulletQueue.filter((b) => b.id !== bestId);
         }
       }
       this.knownServerBulletIds = currentServerBulletIds;
@@ -258,6 +280,9 @@ export class GameEngine {
           // Snap velocity to server (handles wall bounces correctly)
           predicted.vx = server.vx;
           predicted.vy = server.vy;
+          // Reset age so advanceBullet never expires this locally —
+          // server is source of truth for bullet removal.
+          predicted.age = 0;
         } else {
           // Server removed this bullet — suppress the server ID in the
           // interpolated view for INTERPOLATION_DELAY_MS so it doesn't
@@ -557,7 +582,7 @@ export class GameEngine {
         const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
         drawTank(this.ctx, ts, color);
       }
-      drawTankPowerupIndicator(this.ctx, tank, tank.effects, now);
+      drawTankPowerupIndicator(this.ctx, tank, tank.effects);
     });
 
     // Draw server bullets, skipping those that have a matched predicted bullet

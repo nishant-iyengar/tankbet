@@ -15,6 +15,7 @@ import {
   MISSILE_RADIUS,
   PowerupType,
   BULLET_FIRE_COOLDOWN_MS,
+  MISSILE_FIRE_EXTRA_COOLDOWN_MS,
 } from '@tankbet/game-engine/constants';
 import {
   updateTank,
@@ -199,7 +200,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const cooldownReady = (now - lastFired) >= BULLET_FIRE_COOLDOWN_MS;
 
       if (input.fire && hasMissileAmmo && cooldownReady) {
-        this.lastFiredAt.set(sessionId, now);
+        // Add extra cooldown after missile to prevent accidental bullet fire
+        this.lastFiredAt.set(sessionId, now + MISSILE_FIRE_EXTRA_COOLDOWN_MS);
 
         let enemyId = '';
         this.state.tanks.forEach((otherTank, otherSessionId) => {

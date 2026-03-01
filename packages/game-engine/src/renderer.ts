@@ -221,7 +221,6 @@ export function drawTankPowerupIndicator(
   ctx: CanvasRenderingContext2D,
   tank: { x: number; y: number },
   effects: ActiveEffectData[],
-  now: number,
 ): void {
   const weaponEffect = effects.find((e) => POWERUP_DEFS[e.type]?.isWeapon);
   if (!weaponEffect) return;
@@ -229,21 +228,15 @@ export function drawTankPowerupIndicator(
   const def = POWERUP_DEFS[weaponEffect.type];
   if (!def) return;
 
-  // Flash when it's the last ammo
-  if (weaponEffect.remainingAmmo === 1 && Math.sin(now / 100) < 0) return;
-
-  const iconSize = 8;
+  const radius = 4;
   const yOffset = -22;
 
   ctx.save();
   ctx.translate(tank.x, tank.y + yOffset);
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fillStyle = def.color;
-  ctx.fillRect(-iconSize / 2, -iconSize / 2, iconSize, iconSize);
-  ctx.fillStyle = '#0a0e1a';
-  ctx.font = 'bold 6px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(def.label, 0, 0);
+  ctx.fill();
   ctx.restore();
 }
 
