@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ClerkProvider } from '@clerk/clerk-react';
 import { BrowserRouter } from 'react-router-dom';
+import { DevAuthProvider } from './auth/DevAuthContext';
 import { App } from './App';
 import './index.css';
 
@@ -25,9 +26,11 @@ if (!root) throw new Error('Root element not found');
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <ClerkProvider publishableKey={clerkPubKey}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <DevAuthProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </DevAuthProvider>
     </ClerkProvider>
   </React.StrictMode>,
 );

@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { useClerk } from '@clerk/clerk-react';
+import { useAppClerk } from '../auth/useAppAuth';
 import { formatCents } from '@tankbet/shared/utils';
 import { useEffect, useState, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
@@ -13,7 +13,7 @@ interface UserData {
 
 export function Layout(): React.JSX.Element {
   const location = useLocation();
-  const { signOut } = useClerk();
+  const { signOut } = useAppClerk();
   const { get, post } = useApi();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);

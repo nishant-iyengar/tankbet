@@ -8,7 +8,28 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Client } from '@colyseus/sdk';
-import { TankRoom } from '../src/rooms/TankRoom';
+
+// ─── Mock environment (must be hoisted before TankRoom import) ───────────────
+vi.mock('../src/environment', () => ({
+  env: {
+    nodeEnv: 'test',
+    port: 3001,
+    frontendUrl: 'http://localhost:5173',
+    databaseUrl: 'mock://test',
+    clerkPublishableKey: '',
+    clerkSecretKey: '',
+    stripeSecretKey: '',
+    stripeWebhookSecret: '',
+    stripePublishableKey: '',
+    twilioAccountSid: '',
+    twilioAuthToken: '',
+    twilioPhoneNumber: '',
+    pledgeApiKey: '',
+    betaMode: true,
+  },
+  isDev: true,
+  isBeta: true,
+}));
 
 // ─── Mock Prisma ─────────────────────────────────────────────────────────────
 // onGameEnd calls Prisma; mocking it keeps tests self-contained.
@@ -23,6 +44,8 @@ vi.mock('../src/prisma', () => ({
     $transaction: vi.fn().mockResolvedValue([]),
   },
 }));
+
+import { TankRoom } from '../src/rooms/TankRoom';
 
 // ─── Test server setup ────────────────────────────────────────────────────────
 const TEST_PORT = 2599;

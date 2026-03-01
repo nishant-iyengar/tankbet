@@ -1,4 +1,4 @@
-import { useAuth } from '@clerk/clerk-react';
+import { useAppAuth } from '../auth/useAppAuth';
 import { useCallback } from 'react';
 import { apiFetch } from '../api/client';
 
@@ -6,7 +6,7 @@ export function useApi(): {
   get: <T>(path: string) => Promise<T>;
   post: <T>(path: string, body?: unknown) => Promise<T>;
 } {
-  const { getToken } = useAuth();
+  const { getToken } = useAppAuth();
 
   const get = useCallback(
     async <T>(path: string): Promise<T> => {

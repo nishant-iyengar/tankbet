@@ -34,7 +34,7 @@ import {
   checkCircleTankCollision,
 } from '@tankbet/game-engine/physics';
 import type { InputState, WallSegment, Vec2, TankState, MissileState } from '@tankbet/game-engine/physics';
-import { generateMaze, mazeToSegments, getSpawnPosition } from '@tankbet/game-engine/maze';
+import { generateMaze, mazeToSegments, getSpawnPositions } from '@tankbet/game-engine/maze';
 import type { Maze } from '@tankbet/game-engine/maze';
 import { resolveStats, randomPowerupType } from '@tankbet/game-engine/powerups';
 import type { ActiveEffectData } from '@tankbet/game-engine/powerups';
@@ -63,6 +63,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected powerupCells: Array<{ x: number; y: number }> = [];
   protected sessionToUserId = new Map<string, string>();
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
+  protected spawnPositions: [Vec2, Vec2] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   protected lastFiredAt = new Map<string, number>();
 
   protected initRoom(): void {
@@ -73,6 +74,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
     this.mazeWidth = MAZE_COLS * CELL_SIZE;
     this.mazeHeight = MAZE_ROWS * CELL_SIZE;
+    this.spawnPositions = getSpawnPositions(this.maze);
 
     for (let row = 1; row < MAZE_ROWS - 1; row++) {
       for (let col = 1; col < MAZE_COLS - 1; col++) {
@@ -101,7 +103,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
     if (!this.maze) return;
 
-    const spawn = getSpawnPosition(this.maze, playerIdx);
+    const spawn = this.spawnPositions[playerIdx];
     const tank = new Tank();
     tank.id = userId;
     tank.x = spawn.x;
@@ -140,13 +142,16 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       POWERUP_SPAWN_INTERVAL_MIN_S +
       Math.random() * (POWERUP_SPAWN_INTERVAL_MAX_S - POWERUP_SPAWN_INTERVAL_MIN_S);
 
+    // Pick new random spawn positions for the fresh maze
+    this.spawnPositions = getSpawnPositions(this.maze);
+
     // Broadcast new maze to all connected clients
     this.broadcast('maze', { segments: this.wallSegments });
 
     // Respawn all tanks at their indexed spawn positions
     this.state.tanks.forEach((tank, sessionId) => {
       const playerIdx = this.sessionToPlayerIdx.get(sessionId) ?? 0;
-      const spawn = getSpawnPosition(this.maze!, playerIdx);
+      const spawn = this.spawnPositions[playerIdx];
       tank.x = spawn.x;
       tank.y = spawn.y;
       tank.angle = playerIdx === 0 ? 0 : 180;

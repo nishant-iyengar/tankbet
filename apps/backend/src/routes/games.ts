@@ -7,6 +7,21 @@ import { isBetAmount } from '@tankbet/shared/utils';
 import { matchMaker } from '@colyseus/core';
 import { HttpError } from '../errors';
 import { isBeta } from '../environment';
+import { subscribe, unsubscribe, notify } from '../services/inviteEvents';
+
+/** Verify the user has enough available balance inside a transaction. No-op in beta. */
+async function assertSufficientBalance(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  userId: string,
+  requiredCents: number,
+): Promise<void> {
+  if (isBeta) return;
+  const user = await tx.user.findUnique({ where: { id: userId } });
+  if (!user) throw new HttpError(404, 'User not found');
+  if (user.balance - user.reservedBalance < requiredCents) {
+    throw new HttpError(400, 'Insufficient balance');
+  }
+}
 
 export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/games/create — Create invite
@@ -41,14 +56,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
     let game: Awaited<ReturnType<typeof prisma.game.create>>;
     try {
       game = await prisma.$transaction(async (tx) => {
-        if (!isBeta) {
-          const freshUser = await tx.user.findUnique({ where: { id: user.id } });
-          if (!freshUser) throw new HttpError(404, 'User not found');
-          const availableBalance = freshUser.balance - freshUser.reservedBalance;
-          if (availableBalance < betAmountCents) {
-            throw new HttpError(400, 'Insufficient balance');
-          }
-        }
+        await assertSufficientBalance(tx, user.id, betAmountCents);
 
         const created = await tx.game.create({
           data: {
@@ -149,14 +157,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
 
     try {
       await prisma.$transaction(async (tx) => {
-        if (!isBeta) {
-          const freshUser = await tx.user.findUnique({ where: { id: user.id } });
-          if (!freshUser) throw new HttpError(404, 'User not found');
-          const availableBalance = freshUser.balance - freshUser.reservedBalance;
-          if (availableBalance < game.betAmountCents) {
-            throw new HttpError(400, 'Insufficient balance');
-          }
-        }
+        await assertSufficientBalance(tx, user.id, game.betAmountCents);
 
         await tx.game.update({
           where: { id: game.id },
@@ -193,6 +194,8 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       data: { colyseusRoomId: room.roomId },
     });
 
+    notify(game.id, { event: 'accepted', gameId: game.id });
+
     return reply.send({ gameId: game.id, colyseusRoomId: room.roomId });
   });
 
@@ -227,6 +230,8 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       });
     });
 
+    notify(game.id, { event: 'rejected' });
+
     return reply.send({ success: true });
   });
 
@@ -252,7 +257,47 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       }),
     ]);
 
+    notify(game.id, { event: 'cancelled' });
+
     return reply.send({ success: true });
+  });
+
+  // GET /api/games/invite/:token/events — SSE stream for invite status updates
+  fastify.get<{ Params: InviteParams }>('/invite/:token/events', async (req, reply) => {
+    const params = req.params;
+
+    const game = await prisma.game.findUnique({
+      where: { inviteToken: params.token },
+    });
+
+    if (!game) {
+      return reply.status(404).send({ error: 'Invite not found' });
+    }
+
+    if (game.status !== 'PENDING_ACCEPTANCE') {
+      return reply.status(400).send({ error: 'Invite is not pending' });
+    }
+
+    const origin = req.headers.origin ?? '*';
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+    });
+
+    // Confirm connection
+    reply.raw.write(':ok\n\n');
+
+    subscribe(game.id, reply.raw);
+
+    req.raw.on('close', () => {
+      unsubscribe(game.id, reply.raw);
+    });
+
+    // Prevent Fastify from closing the response
+    await reply.hijack();
   });
 
   // GET /api/games/:id — Fetch game state (for reconnect)
@@ -284,10 +329,37 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
     if (!game.colyseusRoomId) {
       return reply.send({ game, playerIndex, seatReservation: null });
     }
+
     const [listing] = await matchMaker.query({ roomId: game.colyseusRoomId });
-    const seatReservation = listing
-      ? await matchMaker.reserveSeatFor(listing, {}, { userId: user.id })
-      : null;
+    if (!listing) {
+      // Room is gone (server restart, crash) — auto-forfeit the orphaned game
+      if (game.status === 'IN_PROGRESS') {
+        const playerIds = [game.creatorId, game.opponentId].filter((pid): pid is string => pid !== null);
+        await prisma.$transaction([
+          prisma.game.update({
+            where: { id: game.id },
+            data: { status: 'FORFEITED', endedAt: new Date() },
+          }),
+          ...playerIds.map((pid) =>
+            prisma.user.update({
+              where: { id: pid },
+              data: {
+                activeGameId: null,
+                reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
+              },
+            }),
+          ),
+        ]);
+        const updatedGame = { ...game, status: 'FORFEITED' as const };
+        return reply.send({ game: updatedGame, playerIndex, seatReservation: null });
+      }
+      return reply.send({ game, playerIndex, seatReservation: null });
+    }
+
+    // Evict user's old session (reconnection hold / stale connection) to free the seat
+    await matchMaker.remoteRoomCall(game.colyseusRoomId, 'evictUser', [user.id]);
+
+    const seatReservation = await matchMaker.reserveSeatFor(listing, {}, { userId: user.id });
     return reply.send({ game, playerIndex, seatReservation });
   });
 }

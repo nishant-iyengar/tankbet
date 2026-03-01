@@ -97,7 +97,12 @@ export function HomePage(): React.JSX.Element {
 
       <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6">
         <h2 className="text-base font-semibold text-white mb-1">New Game</h2>
-        {BETA_MODE && <p className="text-xs text-slate-500 mb-5">Preview mode — betting disabled</p>}
+        {BETA_MODE && (
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 mb-5">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            Preview mode — betting disabled
+          </p>
+        )}
         {!BETA_MODE && <div className="mb-5" />}
 
         {/* Bet chip selector */}

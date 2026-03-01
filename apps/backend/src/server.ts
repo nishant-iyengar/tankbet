@@ -15,8 +15,9 @@ import { scheduleTaxReminderJob } from './jobs/taxReminder';
 import { scheduleDonationSummaryJob } from './jobs/donationSummary';
 import { startInviteExpiryJob } from './services/game.service';
 import { env, isDev } from './environment';
+import { logger } from './logger';
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ loggerInstance: logger });
 
 async function start(): Promise<void> {
   await fastify.register(cors, {

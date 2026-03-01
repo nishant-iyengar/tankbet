@@ -14,7 +14,10 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
   }
 
   if (options.token) {
-    headers['Authorization'] = `Bearer ${options.token}`;
+    // Dev tokens are already formatted as "DevToken <clerkId>"
+    headers['Authorization'] = options.token.startsWith('DevToken ')
+      ? options.token
+      : `Bearer ${options.token}`;
   }
 
   const response = await fetch(`${API_URL}${path}`, {

@@ -59,6 +59,9 @@ importers:
       pg:
         specifier: ^8.19.0
         version: 8.19.0
+      pino:
+        specifier: ^10.3.1
+        version: 10.3.1
       stripe:
         specifier: ^17.5.0
         version: 17.7.0
@@ -72,6 +75,9 @@ importers:
         specifier: ^3.24.2
         version: 3.25.76
     devDependencies:
+      '@colyseus/sdk':
+        specifier: ^0.17.34
+        version: 0.17.34(@colyseus/core@0.17.38)(typescript@5.9.3)(zod@3.25.76)
       '@colyseus/testing':
         specifier: ^0.17.11
         version: 0.17.11(@colyseus/core@0.17.38)(@colyseus/sdk@0.17.34(@colyseus/core@0.17.38)(typescript@5.9.3)(zod@3.25.76))(@colyseus/tools@0.17.19(@colyseus/core@0.17.38)(@colyseus/ws-transport@0.17.9))

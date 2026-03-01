@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom';
-import { useAuth } from '@clerk/clerk-react';
+import { useAppAuth } from './auth/useAppAuth';
 import { Layout } from './components/Layout';
 import { AuthGuard } from './components/AuthGuard';
 import { MobileBlocker } from './components/MobileBlocker';
@@ -17,7 +17,7 @@ import { DevGamePage } from './pages/DevGamePage';
 import { useMobile } from './hooks/useMobile';
 
 export function App(): React.JSX.Element {
-  const { isLoaded } = useAuth();
+  const { isLoaded } = useAppAuth();
   const isMobile = useMobile();
 
   if (isMobile) {

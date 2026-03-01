@@ -1,8 +1,8 @@
-import { useAuth } from '@clerk/clerk-react';
+import { useAppAuth } from '../auth/useAppAuth';
 import { Navigate, Outlet } from 'react-router-dom';
 
 export function AuthGuard(): React.JSX.Element {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn } = useAppAuth();
 
   if (!isSignedIn) {
     return <Navigate to="/login" replace />;

@@ -1,20 +1,45 @@
-import { useState, useEffect } from 'react';
-import { useSignIn, useSignUp, useAuth } from '@clerk/clerk-react';
+import { useState, useEffect, useContext } from 'react';
+import { useSignIn, useSignUp } from '@clerk/clerk-react';
 import { isClerkAPIResponseError } from '@clerk/clerk-react/errors';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useAppAuth } from '../auth/useAppAuth';
+import { DevAuthContext, type DevUser } from '../auth/DevAuthContext';
+import { apiFetch } from '../api/client';
 
+const IS_DEV = import.meta.env.DEV;
 
 type Step = 'phone' | 'otp';
 type Mode = 'signIn' | 'signUp';
 
+interface DevUserResponse {
+  id: string;
+  clerkId: string;
+  username: string;
+  phoneNumber: string;
+}
+
 export function LoginPage(): React.JSX.Element {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn } = useAppAuth();
   const { isLoaded: signInLoaded, signIn, setActive: setSignInActive } = useSignIn();
   const { isLoaded: signUpLoaded, signUp, setActive: setSignUpActive } = useSignUp();
+  const devAuth = useContext(DevAuthContext);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // Navigate only after Clerk's isSignedIn state has fully propagated
+  // Dev login state
+  const [devUsers, setDevUsers] = useState<DevUserResponse[]>([]);
+  const [devLoading, setDevLoading] = useState(false);
+  const [devError, setDevError] = useState('');
+
+  // Load dev users on mount
+  useEffect(() => {
+    if (!IS_DEV) return;
+    apiFetch<{ users: DevUserResponse[] }>('/api/dev/users')
+      .then((r) => setDevUsers(r.users))
+      .catch(() => setDevError('Failed to load dev users'));
+  }, []);
+
+  // Navigate only after auth state has fully propagated
   useEffect(() => {
     if (isSignedIn) {
       const redirect = searchParams.get('redirect');
@@ -30,6 +55,28 @@ export function LoginPage(): React.JSX.Element {
   const [error, setError] = useState('');
 
   const isLoaded = signInLoaded && signUpLoaded;
+
+  async function handleDevLogin(user: DevUserResponse): Promise<void> {
+    if (!devAuth) return;
+    setDevLoading(true);
+    setDevError('');
+    try {
+      await apiFetch<{ user: DevUser }>('/api/dev/login', {
+        method: 'POST',
+        body: { clerkId: user.clerkId },
+      });
+      devAuth.setDevUser({
+        id: user.id,
+        clerkId: user.clerkId,
+        username: user.username,
+        phoneNumber: user.phoneNumber,
+      });
+    } catch (err) {
+      setDevError(err instanceof Error ? err.message : 'Dev login failed');
+    } finally {
+      setDevLoading(false);
+    }
+  }
 
   async function handleSendCode(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
@@ -152,6 +199,28 @@ export function LoginPage(): React.JSX.Element {
           <div className="lg:hidden mb-10 text-center">
             <h1 className="text-3xl font-bold text-cyan-400 tracking-tight">TankBet</h1>
           </div>
+
+          {/* Dev Login Section */}
+          {IS_DEV && devUsers.length > 0 && (
+            <div className="mb-6">
+              <p className="text-xs font-medium text-amber-400/80 uppercase tracking-wider mb-3">Dev Login</p>
+              <div className="space-y-2">
+                {devUsers.map((user) => (
+                  <button
+                    key={user.clerkId}
+                    onClick={() => void handleDevLogin(user)}
+                    disabled={devLoading}
+                    className="w-full flex items-center justify-between bg-slate-800 border border-amber-400/30 text-slate-200 rounded-lg px-4 py-3 text-sm hover:border-amber-400/60 hover:bg-slate-700 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    <span className="font-medium">{user.username}</span>
+                    <span className="text-slate-500 text-xs">{user.phoneNumber}</span>
+                  </button>
+                ))}
+              </div>
+              {devError && <p className="text-red-400 text-sm mt-2">{devError}</p>}
+              <div className="border-b border-slate-700/50 mt-6 mb-2" />
+            </div>
+          )}
 
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-white mb-2">

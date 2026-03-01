@@ -11,6 +11,7 @@ import {
 import { BaseTankRoom } from './BaseTankRoom';
 import { prisma } from '../prisma';
 import { isBeta } from '../environment';
+import { logger } from '../logger';
 
 export class TankRoom extends BaseTankRoom {
   maxClients = 2;
@@ -21,20 +22,36 @@ export class TankRoom extends BaseTankRoom {
   private tieWindowHandle: { clear(): void } | null = null;
   private pendingReconnects = new Map<string, Deferred<Client>>();
 
+  /** Return the session ID of the other player (the one that isn't `sessionId`). */
+  private getOpponentSessionId(sessionId: string): string {
+    for (const [sid] of this.state.tanks) {
+      if (sid !== sessionId) return sid;
+    }
+    return '';
+  }
+
+  /**
+   * Called via remoteRoomCall before reserveSeatFor to free the seat held by
+   * a user's old session during the reconnection grace period.
+   */
+  evictUser(userId: string): void {
+    const pending = this.pendingReconnects.get(userId);
+    if (pending) {
+      this.pendingReconnects.delete(userId);
+      pending.reject(new Error('evicted for new session'));
+    }
+  }
+
   onCreate(options: { gameId: string; player1Id: string; player2Id: string }): void {
     this.autoDispose = false;
     this.gameDbId = options.gameId;
     this.allowedUserIds = [options.player1Id, options.player2Id];
     this.setPrivate(true);
-    this.lock();
     this.initRoom();
 
     this.onMessage('forfeit', (client: Client) => {
       const loserUserId = this.sessionToUserId.get(client.sessionId) ?? '';
-      let winnerUserId = '';
-      this.sessionToUserId.forEach((uid, sid) => {
-        if (sid !== client.sessionId) winnerUserId = uid;
-      });
+      const winnerUserId = this.sessionToUserId.get(this.getOpponentSessionId(client.sessionId)) ?? '';
       if (loserUserId && winnerUserId) {
         void this.onGameEnd(winnerUserId, loserUserId);
       }
@@ -47,7 +64,7 @@ export class TankRoom extends BaseTankRoom {
       throw new ServerError(403, 'Not a participant in this game');
     }
 
-    console.log(`[TankRoom] onJoin sessionId=${client.sessionId} userId=${auth.userId}`);
+    logger.info({ sessionId: client.sessionId, userId: auth.userId }, 'onJoin');
 
     // Cancel any pending grace-period reconnection for this user (they rejoined with a new session)
     const pending = this.pendingReconnects.get(auth.userId);
@@ -81,10 +98,10 @@ export class TankRoom extends BaseTankRoom {
 
       // Re-send maze so the reconnected client can render
       client.send('maze', { segments: this.wallSegments });
-      console.log(`[TankRoom] remapped existing player session=${existingSessionId} → ${client.sessionId}`);
+      logger.info({ oldSessionId: existingSessionId, newSessionId: client.sessionId }, 'remapped existing player session');
     } else {
       this.spawnPlayer(client, auth.userId);
-      console.log(`[TankRoom] player spawned, playerCount=${this.playerCount}`);
+      logger.info({ playerCount: this.playerCount }, 'player spawned');
       if (this.playerCount === 2) {
         this.startCountdown();
       }
@@ -97,17 +114,17 @@ export class TankRoom extends BaseTankRoom {
     let count = GAME_START_COUNTDOWN_SECONDS;
     this.state.countdown = count;
     this.state.phase = 'countdown';
-    console.log(`[TankRoom] startCountdown count=${count}`);
+    logger.info({ count }, 'startCountdown');
 
     const interval = this.clock.setInterval(() => {
       count--;
       this.state.countdown = count;
-      console.log(`[TankRoom] countdown tick count=${count}`);
+      logger.info({ count }, 'countdown tick');
 
       if (count <= 0) {
         interval.clear();
         this.state.phase = 'playing';
-        console.log(`[TankRoom] phase → playing`);
+        logger.info('phase → playing');
         this.startGameLoop();
       }
     }, 1000);
@@ -143,11 +160,7 @@ export class TankRoom extends BaseTankRoom {
   }
 
   private resolveBattle(loserSessionId: string): void {
-    let winnerSessionId = '';
-    this.state.tanks.forEach((_tank, sid) => {
-      if (sid !== loserSessionId) winnerSessionId = sid;
-    });
-
+    const winnerSessionId = this.getOpponentSessionId(loserSessionId);
     const winnerId = this.sessionToUserId.get(winnerSessionId) ?? '';
     const loserId = this.sessionToUserId.get(loserSessionId) ?? '';
 
@@ -155,7 +168,7 @@ export class TankRoom extends BaseTankRoom {
     const newLives = currentLives - 1;
     this.state.lives.set(loserSessionId, newLives);
 
-    console.log(`[TankRoom] battle resolved: winner=${winnerId} loser=${loserId} loserLivesLeft=${newLives}`);
+    logger.info({ winnerId, loserId, loserLivesLeft: newLives }, 'battle resolved');
 
     if (newLives <= 0) {
       // Game over
@@ -307,12 +320,7 @@ export class TankRoom extends BaseTankRoom {
       const currentLoserId = this.sessionToUserId.get(loserSessionId) ?? '';
       if (!currentLoserId) return;
 
-      let winnerSessionId = '';
-      this.state.tanks.forEach((_tank, sid) => {
-        if (sid !== loserSessionId) winnerSessionId = sid;
-      });
-
-      const winnerId = this.sessionToUserId.get(winnerSessionId) ?? '';
+      const winnerId = this.sessionToUserId.get(this.getOpponentSessionId(loserSessionId)) ?? '';
       const loserId = currentLoserId;
 
       if (winnerId && loserId) {

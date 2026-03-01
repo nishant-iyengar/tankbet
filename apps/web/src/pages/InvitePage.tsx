@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth } from '@clerk/clerk-react';
+import { useAppAuth } from '../auth/useAppAuth';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../api/client';
 import { formatCents, formatTime } from '@tankbet/shared/utils';
@@ -11,7 +11,7 @@ export function InvitePage(): React.JSX.Element {
   const { token } = useParams<{ token: string }>();
   const [searchParams] = useSearchParams();
   const isCreator = searchParams.get('creator') === 'true';
-  const { isSignedIn } = useAuth();
+  const { isSignedIn } = useAppAuth();
   const { get, post } = useApi();
   const navigate = useNavigate();
 
@@ -43,6 +43,13 @@ export function InvitePage(): React.JSX.Element {
       try {
         const data = await apiFetch<GameInvitePreview>(`/api/games/invite/${token}`);
         if (cancelled) return;
+
+        // If the game is already in progress, redirect to the game page
+        if (data.status === 'IN_PROGRESS') {
+          navigate(`/game/${data.id}`);
+          return;
+        }
+
         setInvite(data);
         const expiresAt = new Date(data.inviteExpiresAt).getTime();
         setTimeLeft(Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)));
@@ -59,7 +66,7 @@ export function InvitePage(): React.JSX.Element {
       .catch(() => { /* non-critical */ });
 
     return () => { cancelled = true; };
-  }, [token, get]);
+  }, [token, get, navigate]);
 
   useEffect(() => {
     if (timeLeft <= 0) return;
@@ -68,6 +75,25 @@ export function InvitePage(): React.JSX.Element {
     }, 1000);
     return () => clearInterval(interval);
   }, [timeLeft]);
+
+  // Creator view: SSE stream to detect when opponent accepts/rejects/cancels
+  useEffect(() => {
+    if (!token || !isCreator || !invite || invite.status !== 'PENDING_ACCEPTANCE') return;
+
+    const API_URL: string = import.meta.env['VITE_API_URL'] ?? 'http://localhost:3001';
+    const es = new EventSource(`${API_URL}/api/games/invite/${token}/events`);
+
+    es.onmessage = (event: MessageEvent<string>) => {
+      const data = JSON.parse(event.data) as { event: string; gameId?: string };
+      if (data.event === 'accepted' && data.gameId) {
+        navigate(`/game/${data.gameId}`);
+      } else if (data.event === 'rejected' || data.event === 'cancelled') {
+        setInvite((prev) => prev ? { ...prev, status: data.event === 'rejected' ? 'REJECTED' : 'EXPIRED' } : prev);
+      }
+    };
+
+    return () => { es.close(); };
+  }, [token, isCreator, invite, navigate]);
 
   async function handleAccept(): Promise<void> {
     if (!token || (!BETA_MODE && !selectedCharity)) return;
@@ -140,8 +166,8 @@ export function InvitePage(): React.JSX.Element {
       <div className="min-h-screen flex items-center justify-center p-4">
         <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-8 w-full max-w-sm text-center">
           <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1">Waiting for opponent</p>
-          <div className="text-4xl font-bold tabular-nums text-white my-4">
-            {formatTime(timeLeft)}
+          <div className={`text-4xl font-bold tabular-nums my-4 ${timeLeft <= 0 ? 'text-red-400' : 'text-white'}`}>
+            {timeLeft <= 0 ? 'Link Expired' : formatTime(timeLeft)}
           </div>
           {!BETA_MODE && (
             <p className="text-sm text-slate-400 mb-1">
@@ -170,13 +196,22 @@ export function InvitePage(): React.JSX.Element {
               )}
             </button>
           </div>
-          <button
-            onClick={() => void handleCancelInvite()}
-            disabled={cancellingInvite}
-            className="mt-4 w-full border border-slate-700 text-slate-500 hover:border-red-500/50 hover:text-red-400 text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-40 disabled:pointer-events-none"
-          >
-            {cancellingInvite ? 'Cancelling…' : 'Cancel Invite'}
-          </button>
+          {timeLeft <= 0 ? (
+            <button
+              onClick={() => navigate('/')}
+              className="mt-4 w-full border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-white text-xs font-medium py-2 rounded-lg transition-colors"
+            >
+              Home
+            </button>
+          ) : (
+            <button
+              onClick={() => void handleCancelInvite()}
+              disabled={cancellingInvite}
+              className="mt-4 w-full border border-slate-700 text-slate-500 hover:border-red-500/50 hover:text-red-400 text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            >
+              {cancellingInvite ? 'Cancelling…' : 'Cancel Invite'}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -195,8 +230,8 @@ export function InvitePage(): React.JSX.Element {
             </span>
           )}
           <span className="text-slate-600">·</span>
-          <span className={`text-sm tabular-nums font-medium ${timeLeft <= 30 ? 'text-red-400' : 'text-slate-400'}`}>
-            {formatTime(timeLeft)}
+          <span className={`text-sm tabular-nums font-medium ${timeLeft <= 0 ? 'text-red-400' : timeLeft <= 30 ? 'text-red-400' : 'text-slate-400'}`}>
+            {timeLeft <= 0 ? 'Link Expired' : formatTime(timeLeft)}
           </span>
         </div>
 

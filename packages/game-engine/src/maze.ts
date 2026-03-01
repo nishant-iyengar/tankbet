@@ -218,19 +218,49 @@ export function mazeToSegments(maze: Maze): LineSegment[] {
   return segments;
 }
 
-export function getSpawnPosition(maze: Maze, playerIndex: 0 | 1): Vec2 {
-  if (playerIndex === 0) {
-    // Top-left area
-    return {
-      x: CELL_SIZE / 2,
-      y: CELL_SIZE / 2,
-    };
+/**
+ * Pick two random spawn positions that are at least 10% of the map diagonal apart.
+ * Tries up to 100 random pairs; falls back to the pair with the greatest separation.
+ */
+export function getSpawnPositions(
+  maze: Maze,
+  random: () => number = Math.random,
+): [Vec2, Vec2] {
+  const totalWidth = maze.cols * CELL_SIZE;
+  const totalHeight = maze.rows * CELL_SIZE;
+  const diagonal = Math.sqrt(totalWidth * totalWidth + totalHeight * totalHeight);
+  const minDistance = diagonal * 0.10;
+
+  let bestPair: [Vec2, Vec2] = [
+    { x: CELL_SIZE / 2, y: CELL_SIZE / 2 },
+    { x: (maze.cols - 1) * CELL_SIZE + CELL_SIZE / 2, y: (maze.rows - 1) * CELL_SIZE + CELL_SIZE / 2 },
+  ];
+  let bestDist = 0;
+
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const col1 = Math.floor(random() * maze.cols);
+    const row1 = Math.floor(random() * maze.rows);
+    const col2 = Math.floor(random() * maze.cols);
+    const row2 = Math.floor(random() * maze.rows);
+
+    const p1: Vec2 = { x: col1 * CELL_SIZE + CELL_SIZE / 2, y: row1 * CELL_SIZE + CELL_SIZE / 2 };
+    const p2: Vec2 = { x: col2 * CELL_SIZE + CELL_SIZE / 2, y: row2 * CELL_SIZE + CELL_SIZE / 2 };
+
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist >= minDistance) {
+      return [p1, p2];
+    }
+
+    if (dist > bestDist) {
+      bestDist = dist;
+      bestPair = [p1, p2];
+    }
   }
-  // Bottom-right area
-  return {
-    x: (maze.cols - 1) * CELL_SIZE + CELL_SIZE / 2,
-    y: (maze.rows - 1) * CELL_SIZE + CELL_SIZE / 2,
-  };
+
+  return bestPair;
 }
 
 export function getRandomSpawn(maze: Maze, occupiedPositions: Vec2[], random: () => number = Math.random): Vec2 {

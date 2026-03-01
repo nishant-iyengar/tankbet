@@ -77,7 +77,7 @@ export type { Cell, Wall, Maze, LineSegment } from './maze';
 export {
   generateMaze,
   mazeToSegments,
-  getSpawnPosition,
+  getSpawnPositions,
   getRandomSpawn,
 } from './maze';
 

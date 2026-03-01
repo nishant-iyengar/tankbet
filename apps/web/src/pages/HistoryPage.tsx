@@ -7,7 +7,6 @@ const STATUS_OPTIONS: Array<{ label: string; value: GameStatus | '' }> = [
   { label: 'All Statuses', value: '' },
   { label: 'Completed', value: 'COMPLETED' },
   { label: 'Forfeited', value: 'FORFEITED' },
-  { label: 'Expired', value: 'EXPIRED' },
   { label: 'Rejected', value: 'REJECTED' },
   { label: 'Pending', value: 'PENDING_ACCEPTANCE' },
   { label: 'In Progress', value: 'IN_PROGRESS' },

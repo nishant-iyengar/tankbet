@@ -1,13 +1,16 @@
 import type { FastifyInstance } from 'fastify';
-import { getAuth } from '@clerk/fastify';
+import { getAuth, clerkClient } from '@clerk/fastify';
 import { prisma } from '../prisma';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, getDevClerkId } from '../middleware/auth';
 import { generateUsername } from '@tankbet/shared/username';
 
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/users/onboard — Create user after Clerk signup
   fastify.post('/onboard', async (req, reply) => {
-    const { userId } = getAuth(req);
+    // Support DevToken auth in dev mode
+    const devClerkId = getDevClerkId(req);
+    const clerkAuth = devClerkId ? null : getAuth(req);
+    const userId = devClerkId ?? clerkAuth?.userId;
     if (!userId) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
@@ -16,6 +19,16 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     const existing = await prisma.user.findUnique({ where: { clerkId: userId } });
     if (existing) {
       return reply.status(200).send({ user: existing });
+    }
+
+    // Fetch phone number from Clerk (for real users) or DB (for dev users)
+    let phoneNumber = '';
+    if (!devClerkId) {
+      const clerkUser = await clerkClient.users.getUser(userId);
+      const primaryPhone = clerkUser.phoneNumbers.find(
+        (p) => p.id === clerkUser.primaryPhoneNumberId,
+      );
+      phoneNumber = primaryPhone?.phoneNumber ?? '';
     }
 
     // Generate unique username with retry on collision
@@ -32,6 +45,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       data: {
         clerkId: userId,
         username,
+        phoneNumber,
       },
     });
 
@@ -50,6 +64,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       });
       if (game && (game.status === 'PENDING_ACCEPTANCE' || game.status === 'IN_PROGRESS')) {
         activeGame = { gameId: game.id, inviteToken: game.inviteToken, status: game.status };
+      } else {
+        // Stale activeGameId — game ended/expired but pointer wasn't cleared. Fix it.
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { activeGameId: null },
+        });
       }
     }
 
@@ -94,7 +114,9 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     // Build where clause: user is creator OR opponent
     const userFilter = { OR: [{ creatorId: user.id }, { opponentId: user.id }] };
 
-    const statusFilter = query.status ? { status: query.status as 'PENDING_ACCEPTANCE' | 'IN_PROGRESS' | 'COMPLETED' | 'FORFEITED' | 'REJECTED' | 'EXPIRED' } : {};
+    const statusFilter = query.status
+      ? { status: query.status as 'PENDING_ACCEPTANCE' | 'IN_PROGRESS' | 'COMPLETED' | 'FORFEITED' | 'REJECTED' | 'EXPIRED' }
+      : { status: { not: 'EXPIRED' as const } };
 
     const charityFilter = query.charityId
       ? { OR: [{ creatorCharityId: query.charityId }, { opponentCharityId: query.charityId }] }

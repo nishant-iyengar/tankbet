@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Client } from '@colyseus/sdk';
 import { useApi } from '../hooks/useApi';
@@ -140,8 +140,11 @@ export function GamePage(): React.JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { get } = useApi();
+  const getRef = useRef(get);
+  getRef.current = get;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  const connectingRef = useRef(false);
   const [phase, setPhase] = useState<string>('loading');
   const [winnerId, setWinnerId] = useState('');
   const [roundWinnerId, setRoundWinnerId] = useState('');
@@ -151,49 +154,6 @@ export function GamePage(): React.JSX.Element {
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   const isMobile = useMobile();
-
-  const loadAndConnect = useCallback(async (): Promise<void> => {
-    try {
-      const data = await get<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${id}`);
-      const { game, playerIndex, seatReservation } = data;
-
-      setGameData(game);
-
-      if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent || !seatReservation) {
-        setError('Game is not available');
-        return;
-      }
-
-      if (!canvasRef.current) return;
-
-      setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
-      setPhase('connecting');
-
-      const wsUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
-      const client = new Client(wsUrl);
-      const engine = new GameEngine(canvasRef.current);
-      engineRef.current = engine;
-
-      engine.setPhaseChangeCallback((p, wId, rWId) => {
-        setPhase(p);
-        setWinnerId(wId);
-        setRoundWinnerId(rWId);
-      });
-
-      await engine.connect(
-        client,
-        seatReservation,
-        playerIndex,
-        game.creator.username,
-        game.opponent.username,
-        game.betAmountCents,
-      );
-
-      setPhase('playing');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect');
-    }
-  }, [id, get]);
 
   function handleLeaveConfirm(): void {
     setShowLeaveModal(false);
@@ -207,13 +167,71 @@ export function GamePage(): React.JSX.Element {
   useEffect(() => {
     if (isMobile || !id) return;
 
+    // Prevent StrictMode double-mount from making two connection attempts.
+    // connectingRef persists across unmount/remount, so mount 2 sees it and skips.
+    // Mount 1's async work runs to completion and sets engineRef.
+    if (connectingRef.current || engineRef.current) return;
+    connectingRef.current = true;
+
+    async function loadAndConnect(): Promise<void> {
+      try {
+        const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${id}`);
+
+        const { game, playerIndex, seatReservation } = data;
+
+        setGameData(game);
+
+        if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent || !seatReservation) {
+          connectingRef.current = false;
+          setError('Game is not available');
+          return;
+        }
+
+        if (!canvasRef.current) {
+          connectingRef.current = false;
+          return;
+        }
+
+        setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
+        setPhase('connecting');
+
+        const wsUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
+        const client = new Client(wsUrl);
+        const engine = new GameEngine(canvasRef.current);
+
+        engine.setPhaseChangeCallback((p, wId, rWId) => {
+          setPhase(p);
+          setWinnerId(wId);
+          setRoundWinnerId(rWId);
+        });
+
+        await engine.connect(
+          client,
+          seatReservation,
+          playerIndex,
+          game.creator.username,
+          game.opponent.username,
+          game.betAmountCents,
+        );
+
+        engineRef.current = engine;
+        setPhase('playing');
+      } catch (err) {
+        connectingRef.current = false;
+        setError(err instanceof Error ? err.message : 'Failed to connect');
+      }
+    }
+
     void loadAndConnect();
 
     return () => {
-      engineRef.current?.destroy();
-      engineRef.current = null;
+      if (engineRef.current) {
+        engineRef.current.destroy();
+        engineRef.current = null;
+        connectingRef.current = false;
+      }
     };
-  }, [id, isMobile, loadAndConnect]);
+  }, [id, isMobile]);
 
   if (isMobile) {
     return (
@@ -230,15 +248,31 @@ export function GamePage(): React.JSX.Element {
   }
 
   if (error) {
+    const statusMessages: Record<string, { title: string; subtitle: string }> = {
+      COMPLETED: { title: 'Game Finished', subtitle: 'This game has already ended.' },
+      FORFEITED: { title: 'Game Forfeited', subtitle: 'This game was forfeited or the server restarted.' },
+      EXPIRED: { title: 'Game Expired', subtitle: 'This game invite expired before it was accepted.' },
+      REJECTED: { title: 'Invite Declined', subtitle: 'The invite for this game was declined.' },
+    };
+    const status = gameData?.status ?? '';
+    const msg = statusMessages[status];
+
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <p className="text-red-400 mb-4 text-sm">{error}</p>
+          {msg ? (
+            <>
+              <p className="text-slate-200 font-semibold text-lg mb-1">{msg.title}</p>
+              <p className="text-slate-500 text-sm mb-6">{msg.subtitle}</p>
+            </>
+          ) : (
+            <p className="text-red-400 mb-6 text-sm">{error}</p>
+          )}
           <button
             onClick={() => navigate('/')}
-            className="text-cyan-400 hover:text-cyan-300 text-sm underline transition-colors"
+            className="bg-cyan-400 text-slate-900 font-semibold px-6 py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors"
           >
-            Go Home
+            Back to Home
           </button>
         </div>
       </div>

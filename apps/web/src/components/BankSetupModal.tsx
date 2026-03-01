@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
-import { useUser } from '@clerk/clerk-react';
+import { useAppUser } from '../auth/useAppAuth';
 import { useApi } from '../hooks/useApi';
 import { Modal } from './Modal';
 
@@ -10,7 +10,7 @@ interface BankSetupModalProps {
 }
 
 export function BankSetupModal({ onSuccess, onClose }: BankSetupModalProps): React.JSX.Element {
-  const { user } = useUser();
+  const { user } = useAppUser();
   const { post } = useApi();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
