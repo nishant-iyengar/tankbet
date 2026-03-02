@@ -45,15 +45,6 @@ import { InputHandler } from './InputHandler';
 // Interfaces
 // ---------------------------------------------------------------------------
 
-interface InputRecord {
-  seq: number;
-  keys: InputState;
-  dt: number;
-  predictedX: number;
-  predictedY: number;
-  predictedAngle: number;
-}
-
 interface RemoteTankState {
   x: number;
   y: number;
@@ -130,7 +121,6 @@ export interface SeatReservation {
 const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
 const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
 const MAX_PHYSICS_STEPS_PER_FRAME = 6;
-const INPUT_BUFFER_CAP = 120;
 
 // ---------------------------------------------------------------------------
 // GameEngine
@@ -159,10 +149,6 @@ export class GameEngine {
   private wallEndpoints: Vec2[] = [];
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
-
-  // Gambetta reconciliation (tick-count based, not seq-based)
-  private inputBuffer: InputRecord[] = [];
-  private lastReconciledServerTick = 0;
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -286,36 +272,12 @@ export class GameEngine {
         this.syncTankEffects(tank, sessionId);
 
         if (sessionId === this.localSessionId) {
-          // === Gambetta Reconciliation (tick-count based) ===
-          if (!tank.alive) {
-            this.predictedTank = {
-              id: tank.id,
-              x: tank.x,
-              y: tank.y,
-              angle: tank.angle,
-              speed: tank.speed,
-            };
-            this.inputBuffer = [];
-            this.lastReconciledServerTick = room.state.serverTick;
-            return;
-          }
-
-          // Discard entries matching the number of server ticks processed
-          // since last reconciliation. This is a 1:1 mapping — the server
-          // ran N ticks, so we drop N entries from the front of the buffer.
-          const currentServerTick = room.state.serverTick;
-          const ticksProcessed = currentServerTick - this.lastReconciledServerTick;
-          this.lastReconciledServerTick = currentServerTick;
-
-          if (ticksProcessed > 0 && ticksProcessed <= this.inputBuffer.length) {
-            this.inputBuffer.splice(0, ticksProcessed);
-          } else if (ticksProcessed > this.inputBuffer.length) {
-            // Server processed more ticks than we have buffered — clear and accept server state
-            this.inputBuffer = [];
-          }
-
-          // Start from server position and replay remaining (unprocessed) inputs
-          let replayState: TankState = {
+          // === Smooth correction (no input replay) ===
+          // Instead of Gambetta reconciliation, we simply nudge the
+          // predicted position toward the server position each patch.
+          // The client prediction loop provides instant local feedback,
+          // while this correction keeps us from drifting.
+          const serverState: TankState = {
             id: tank.id,
             x: tank.x,
             y: tank.y,
@@ -323,29 +285,29 @@ export class GameEngine {
             speed: tank.speed,
           };
 
-          for (const rec of this.inputBuffer) {
-            replayState = this.stepTankPhysics(replayState, rec.keys, rec.dt);
+          if (!tank.alive) {
+            this.predictedTank = serverState;
+            return;
           }
 
-          // Smooth reconciliation: blend toward replay result to avoid micro-stutters.
           const predicted = this.predictedTank;
           if (!predicted) {
-            this.predictedTank = replayState;
+            this.predictedTank = serverState;
           } else {
-            const dx = replayState.x - predicted.x;
-            const dy = replayState.y - predicted.y;
+            const dx = serverState.x - predicted.x;
+            const dy = serverState.y - predicted.y;
             const errorSq = dx * dx + dy * dy;
-            const dAngle = shortestAngleDelta(replayState.angle, predicted.angle);
-            const angleBig = Math.abs(dAngle) > 10;
+            const dAngle = shortestAngleDelta(serverState.angle, predicted.angle);
 
-            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX || angleBig) {
+            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX || Math.abs(dAngle) > 30) {
               // Large error — snap immediately
-              this.predictedTank = replayState;
+              this.predictedTank = serverState;
             } else {
-              // Blend position and angle toward reconciled values
-              const blend = 0.3;
+              // Gently blend toward server position each patch.
+              // ~20% per patch at 20Hz = smooth convergence within ~200ms
+              const blend = 0.2;
               this.predictedTank = {
-                ...replayState,
+                ...predicted,
                 x: errorSq > 0.25 ? predicted.x + dx * blend : predicted.x,
                 y: errorSq > 0.25 ? predicted.y + dy * blend : predicted.y,
                 angle: Math.abs(dAngle) > 0.1 ? predicted.angle + dAngle * blend : predicted.angle,
@@ -545,34 +507,16 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Prediction (Gambetta: predict locally, store in input buffer)
+  // Prediction (local-only, no input replay)
   // -------------------------------------------------------------------------
 
   private runPrediction(dt: number): void {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
 
     const input = this.inputHandler.getKeys();
-    const prevTank = this.predictedTank;
 
-    // Advance tank physics
-    const final = this.stepTankPhysics(prevTank, input, dt);
-    this.predictedTank = final;
-
-    // Store in input buffer for tick-count-based reconciliation.
-    // No seq needed — buffer entries are discarded by counting server ticks.
-    this.inputBuffer.push({
-      seq: 0,
-      keys: input,
-      dt,
-      predictedX: final.x,
-      predictedY: final.y,
-      predictedAngle: final.angle,
-    });
-
-    // Cap buffer size
-    if (this.inputBuffer.length > INPUT_BUFFER_CAP) {
-      this.inputBuffer.splice(0, this.inputBuffer.length - INPUT_BUFFER_CAP);
-    }
+    // Advance tank physics locally for instant feedback
+    this.predictedTank = this.stepTankPhysics(this.predictedTank, input, dt);
 
     // Advance bullets with wall bounce
     const bulletToRemove: string[] = [];
