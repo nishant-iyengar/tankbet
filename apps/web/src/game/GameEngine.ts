@@ -646,18 +646,19 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~4 → corrections converge in ~300ms (smoother, sacrifices snappiness)
-    const CORRECTION_RATE = 4;
+    // Rate ~8 → corrections converge in ~150ms
+    const CORRECTION_RATE = 8;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;
     this.displayOffsetY *= keep;
-    this.displayOffsetAngle *= keep;
+    // Snap angle immediately — angle offsets cause the most visible wobble
+    // since they change movement direction, so don't smooth them
+    this.displayOffsetAngle = 0;
 
     // Snap to zero when negligible
     if (Math.abs(this.displayOffsetX) < 0.1) this.displayOffsetX = 0;
     if (Math.abs(this.displayOffsetY) < 0.1) this.displayOffsetY = 0;
-    if (Math.abs(this.displayOffsetAngle) < 0.05) this.displayOffsetAngle = 0;
   }
 
   // -------------------------------------------------------------------------
