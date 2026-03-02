@@ -11,8 +11,6 @@ import {
   collideTankWithEndpoints,
   extractWallEndpoints,
   advanceBullet,
-  canFireBullet,
-  createBullet,
   updateMissile,
   bulletCrossesWall,
   reflectBulletAtWall,
@@ -26,7 +24,6 @@ import {
   PHYSICS_STEP,
   MISSILE_RADIUS,
   MISSILE_LIFETIME_SECONDS,
-  PowerupType,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -133,7 +130,6 @@ const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
 const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
 const MAX_PHYSICS_STEPS_PER_FRAME = 6;
 const INPUT_BUFFER_CAP = 120;
-const UNCONFIRMED_BULLET_MAX_AGE_S = 0.5;
 
 // ---------------------------------------------------------------------------
 // GameEngine
@@ -172,11 +168,6 @@ export class GameEngine {
   // Projectile state (event-driven)
   private activeBullets = new Map<string, BulletState>();
   private activeMissiles = new Map<string, MissileState>();
-
-  // Ghost bullet prediction — immediate visual feedback before server confirms
-  private pendingLocalBullets = new Map<string, BulletState>();
-  private nextLocalBulletSeq = 0;
-  private lastFireTime = 0;
 
   // Game state tracking (replaces parseState/stateBuffer)
   private currentPhase = 'waiting';
@@ -242,6 +233,9 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     // Tank schema callbacks
     // -----------------------------------------------------------------------
+    // NOTE: $.tanks.onChange is NOT recursive for Schema children in Colyseus 0.14+.
+    // Property changes on individual Tank instances (x, y, alive, etc.) must be
+    // listened to via per-instance callbacks registered inside onAdd.
     $.tanks.onAdd((tank, sessionId) => {
       // Track insertion order for color assignment
       if (!this.tankSessionOrder.includes(sessionId)) {
@@ -277,73 +271,75 @@ export class GameEngine {
 
       this.tankAliveState.set(sessionId, tank.alive);
       this.syncTankEffects(tank, sessionId);
-    });
 
-    $.tanks.onChange((tank, sessionId) => {
-      // Detect alive -> dead transitions for explosions
-      const wasAlive = this.tankAliveState.get(sessionId);
-      if (wasAlive === true && !tank.alive) {
-        this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
-      }
-      this.tankAliveState.set(sessionId, tank.alive);
-      this.syncTankEffects(tank, sessionId);
+      // Per-instance change listener — fires when ANY property on this tank changes
+      const tankProxy = getCallbacks(tank);
+      tankProxy.onChange(() => {
+        // Detect alive -> dead transitions for explosions
+        const wasAlive = this.tankAliveState.get(sessionId);
+        if (wasAlive === true && !tank.alive) {
+          this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+        }
+        this.tankAliveState.set(sessionId, tank.alive);
+        this.syncTankEffects(tank, sessionId);
 
-      if (sessionId === this.localSessionId) {
-        // === Gambetta Reconciliation ===
-        if (!tank.alive) {
-          this.predictedTank = {
+        if (sessionId === this.localSessionId) {
+          // === Gambetta Reconciliation ===
+          if (!tank.alive) {
+            this.predictedTank = {
+              id: tank.id,
+              x: tank.x,
+              y: tank.y,
+              angle: tank.angle,
+              speed: tank.speed,
+            };
+            this.inputBuffer = [];
+            return;
+          }
+
+          // Discard acknowledged inputs
+          const ackSeq = tank.lastAckSeq;
+          this.inputBuffer = this.inputBuffer.filter((rec) => rec.seq > ackSeq);
+
+          // Start from server position and replay unacknowledged inputs
+          let replayState: TankState = {
             id: tank.id,
             x: tank.x,
             y: tank.y,
             angle: tank.angle,
             speed: tank.speed,
           };
-          this.inputBuffer = [];
-          return;
-        }
 
-        // Discard acknowledged inputs
-        const ackSeq = tank.lastAckSeq;
-        this.inputBuffer = this.inputBuffer.filter((rec) => rec.seq > ackSeq);
-
-        // Start from server position and replay unacknowledged inputs
-        let replayState: TankState = {
-          id: tank.id,
-          x: tank.x,
-          y: tank.y,
-          angle: tank.angle,
-          speed: tank.speed,
-        };
-
-        for (const rec of this.inputBuffer) {
-          replayState = this.stepTankPhysics(replayState, rec.keys, rec.dt);
-        }
-
-        // Accept the replay result — this naturally corrects drift since
-        // the replay started from the authoritative server position.
-        this.predictedTank = replayState;
-      } else {
-        // === Remote tank interpolation update ===
-        const remote = this.remoteTanks.get(sessionId);
-        if (remote) {
-          const now = performance.now();
-          const elapsed = now - remote.lastUpdateTime;
-          // Adaptive update interval (EMA)
-          if (elapsed > 0 && elapsed < 200) {
-            remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+          for (const rec of this.inputBuffer) {
+            replayState = this.stepTankPhysics(replayState, rec.keys, rec.dt);
           }
-          // Shift current render position to prev
-          remote.prevX = remote.x;
-          remote.prevY = remote.y;
-          remote.prevAngle = remote.angle;
-          // Set new target
-          remote.targetX = tank.x;
-          remote.targetY = tank.y;
-          remote.targetAngle = tank.angle;
-          remote.targetSpeed = tank.speed;
-          remote.lastUpdateTime = now;
+
+          // Accept the replay result — this naturally corrects drift since
+          // the replay started from the authoritative server position.
+          this.predictedTank = replayState;
+        } else {
+          // === Remote tank interpolation update ===
+          const remote = this.remoteTanks.get(sessionId);
+          if (remote) {
+            const now = performance.now();
+            const elapsed = now - remote.lastUpdateTime;
+            // Adaptive update interval (EMA)
+            if (elapsed > 0 && elapsed < 200) {
+              remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+            }
+            // Shift current render position to prev
+            remote.prevX = remote.x;
+            remote.prevY = remote.y;
+            remote.prevAngle = remote.angle;
+            // Set new target
+            remote.targetX = tank.x;
+            remote.targetY = tank.y;
+            remote.targetAngle = tank.angle;
+            remote.targetSpeed = tank.speed;
+            remote.lastUpdateTime = now;
+          }
         }
-      }
+      });
     });
 
     $.tanks.onRemove((_tank, sessionId) => {
@@ -356,35 +352,6 @@ export class GameEngine {
     // Bullet event handlers
     // -----------------------------------------------------------------------
     room.onMessage('bullet:fire', (data: BulletFireEvent) => {
-      const localTankId = this.predictedTank?.id;
-      if (localTankId && data.ownerId === localTankId) {
-        // Match to closest pending predicted bullet
-        let bestId: string | null = null;
-        let bestDistSq = Infinity;
-        for (const [predId, pred] of this.pendingLocalBullets) {
-          const dx = pred.x - data.x;
-          const dy = pred.y - data.y;
-          const distSq = dx * dx + dy * dy;
-          if (distSq < bestDistSq) {
-            bestDistSq = distSq;
-            bestId = predId;
-          }
-        }
-        if (bestId !== null) {
-          const predicted = this.activeBullets.get(bestId);
-          this.pendingLocalBullets.delete(bestId);
-          this.activeBullets.delete(bestId);
-          if (predicted) {
-            this.activeBullets.set(data.id, {
-              ...predicted,
-              id: data.id,
-              vx: data.vx,
-              vy: data.vy,
-            });
-            return;
-          }
-        }
-      }
       this.activeBullets.set(data.id, {
         id: data.id,
         ownerId: data.ownerId,
@@ -410,12 +377,10 @@ export class GameEngine {
 
     room.onMessage('bullet:clear', () => {
       this.activeBullets.clear();
-      this.pendingLocalBullets.clear();
     });
 
     room.onMessage('bullet:sync', (bullets: BulletState[]) => {
       this.activeBullets.clear();
-      this.pendingLocalBullets.clear();
       for (const b of bullets) {
         this.activeBullets.set(b.id, { ...b });
       }
@@ -555,27 +520,6 @@ export class GameEngine {
     const seq = this.inputHandler.getSeq();
     const prevTank = this.predictedTank;
 
-    // Ghost bullet prediction — create local predicted bullet for immediate visual feedback
-    const localEffects = this.tankEffects.get(this.localSessionId) ?? [];
-    const hasMissileAmmo = localEffects.some(
-      (e) => e.type === PowerupType.TARGETING_MISSILE && e.remainingAmmo > 0,
-    );
-    if (input.fire && !hasMissileAmmo) {
-      const perfNow = performance.now();
-      let bulletCount = 0;
-      const localTankId = this.predictedTank.id;
-      for (const b of this.activeBullets.values()) {
-        if (b.ownerId === localTankId) bulletCount++;
-      }
-      if (canFireBullet(perfNow, this.lastFireTime, bulletCount)) {
-        this.lastFireTime = perfNow;
-        const localId = `predicted_${this.nextLocalBulletSeq++}`;
-        const bullet = createBullet(localId, this.predictedTank);
-        this.activeBullets.set(localId, bullet);
-        this.pendingLocalBullets.set(localId, bullet);
-      }
-    }
-
     // Advance tank physics
     const final = this.stepTankPhysics(prevTank, input, dt);
     this.predictedTank = final;
@@ -603,15 +547,10 @@ export class GameEngine {
         bulletToRemove.push(id);
         continue;
       }
-      if (this.pendingLocalBullets.has(id) && advanced.age >= UNCONFIRMED_BULLET_MAX_AGE_S) {
-        bulletToRemove.push(id);
-        continue;
-      }
       this.activeBullets.set(id, advanced);
     }
     for (const id of bulletToRemove) {
       this.activeBullets.delete(id);
-      this.pendingLocalBullets.delete(id);
     }
 
     // Advance missiles with homing + wall bounce
