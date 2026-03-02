@@ -32,7 +32,6 @@ import {
   drawBullet,
   drawMissile,
   drawPowerup,
-  drawTankPowerupIndicator,
   drawCountdown,
   drawHUD,
   drawExplosion,
@@ -702,11 +701,9 @@ export class GameEngine {
       // Use predicted position for the local tank, interpolated for remote tanks
       if (sessionId === this.localSessionId && this.predictedTank) {
         drawTank(this.ctx, this.predictedTank, color);
-        drawTankPowerupIndicator(this.ctx, this.predictedTank, tank.effects);
       } else {
         const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
         drawTank(this.ctx, ts, color);
-        drawTankPowerupIndicator(this.ctx, ts, tank.effects);
       }
     });
 
@@ -725,7 +722,15 @@ export class GameEngine {
       drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime);
     }
 
-    if (!this.isPractice) {
+    // Collect effects for HUD missile indicators
+    const tankEntries = Array.from(state.tanks.values());
+    const p1Effects = tankEntries[0]?.effects ?? [];
+    const p2Effects = tankEntries[1]?.effects ?? [];
+
+    if (this.isPractice) {
+      // Practice mode: show missile indicators without names/lives/bet
+      drawHUD(this.ctx, width, height, '', '', 0, 0, 0, p1Effects, p2Effects);
+    } else {
       const livesArr = Array.from(state.lives.values());
       const p1Lives = livesArr[0] ?? 0;
       const p2Lives = livesArr[1] ?? 0;
@@ -738,6 +743,8 @@ export class GameEngine {
         p1Lives,
         p2Lives,
         this.betAmountCents,
+        p1Effects,
+        p2Effects,
       );
     }
 

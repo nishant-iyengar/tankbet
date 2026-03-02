@@ -41,7 +41,7 @@ export const SERVER_TICK_HZ = 30;
 export const BULLET_FIRE_COOLDOWN_MS = 170; // min ms between shots per tank
 export const MISSILE_FIRE_EXTRA_COOLDOWN_MS = 100; // extra cooldown after firing a missile to prevent accidental bullet
 export const CLIENT_FPS = 60;
-export const INTERPOLATION_DELAY_MS = 200;
+export const INTERPOLATION_DELAY_MS = 250;
 
 // Powerups
 export const PowerupType = {

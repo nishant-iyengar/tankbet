@@ -88,7 +88,6 @@ export {
   drawBullet,
   drawMissile,
   drawPowerup,
-  drawTankPowerupIndicator,
   drawCountdown,
   drawHUD,
 } from './renderer';

@@ -216,28 +216,23 @@ export function drawPowerup(
   ctx.restore();
 }
 
-// Draws a small powerup icon above a tank for any held weapon effects.
-export function drawTankPowerupIndicator(
-  ctx: CanvasRenderingContext2D,
-  tank: { x: number; y: number },
-  effects: ActiveEffectData[],
-): void {
-  const weaponEffect = effects.find((e) => POWERUP_DEFS[e.type]?.isWeapon);
-  if (!weaponEffect) return;
-
-  const def = POWERUP_DEFS[weaponEffect.type];
-  if (!def) return;
-
-  const radius = 4;
-  const yOffset = -22;
-
+function drawMissileIcon(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  const radius = 7;
   ctx.save();
-  ctx.translate(tank.x, tank.y + yOffset);
   ctx.beginPath();
-  ctx.arc(0, 0, radius, 0, Math.PI * 2);
-  ctx.fillStyle = def.color;
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = MISSILE_COLOR;
   ctx.fill();
+  ctx.fillStyle = '#0a0e1a';
+  ctx.font = 'bold 9px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('M', x, y);
   ctx.restore();
+}
+
+function hasWeaponEffect(effects: ActiveEffectData[]): boolean {
+  return effects.some((e) => POWERUP_DEFS[e.type]?.isWeapon);
 }
 
 export function drawHUD(
@@ -249,26 +244,50 @@ export function drawHUD(
   player1Lives: number,
   player2Lives: number,
   betAmountCents: number,
+  player1Effects: ActiveEffectData[],
+  player2Effects: ActiveEffectData[],
 ): void {
   ctx.font = HUD_FONT;
   ctx.textBaseline = 'top';
 
   // Player 1 — top left
-  ctx.fillStyle = TANK_COLOR_P1;
-  ctx.textAlign = 'left';
-  const p1Hearts = '\u2665'.repeat(player1Lives);
-  ctx.fillText(`${player1Name}  ${p1Hearts}`, HUD_PADDING, HUD_PADDING);
+  let p1TextEnd = HUD_PADDING;
+  if (player1Name) {
+    ctx.fillStyle = TANK_COLOR_P1;
+    ctx.textAlign = 'left';
+    const p1Hearts = '\u2665'.repeat(player1Lives);
+    const p1Text = `${player1Name}  ${p1Hearts}`;
+    ctx.fillText(p1Text, HUD_PADDING, HUD_PADDING);
+    p1TextEnd = HUD_PADDING + ctx.measureText(p1Text).width;
+  }
+
+  if (hasWeaponEffect(player1Effects)) {
+    drawMissileIcon(ctx, p1TextEnd + 12, HUD_PADDING + 7);
+  }
 
   // Player 2 — top right
-  ctx.fillStyle = TANK_COLOR_P2;
-  ctx.textAlign = 'right';
-  const p2Hearts = '\u2665'.repeat(player2Lives);
-  ctx.fillText(`${p2Hearts}  ${player2Name}`, canvasWidth - HUD_PADDING, HUD_PADDING);
+  let p2TextStart = canvasWidth - HUD_PADDING;
+  if (player2Name) {
+    ctx.font = HUD_FONT;
+    ctx.fillStyle = TANK_COLOR_P2;
+    ctx.textAlign = 'right';
+    const p2Hearts = '\u2665'.repeat(player2Lives);
+    const p2Text = `${p2Hearts}  ${player2Name}`;
+    ctx.fillText(p2Text, canvasWidth - HUD_PADDING, HUD_PADDING);
+    p2TextStart = canvasWidth - HUD_PADDING - ctx.measureText(p2Text).width;
+  }
+
+  if (hasWeaponEffect(player2Effects)) {
+    drawMissileIcon(ctx, p2TextStart - 12, HUD_PADDING + 7);
+  }
 
   // Bet amount — bottom center
-  ctx.fillStyle = '#ffffff';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'bottom';
-  const dollars = (betAmountCents / 100).toFixed(2);
-  ctx.fillText(`Playing for $${dollars}`, canvasWidth / 2, canvasHeight - HUD_PADDING);
+  if (betAmountCents > 0) {
+    ctx.font = HUD_FONT;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    const dollars = (betAmountCents / 100).toFixed(2);
+    ctx.fillText(`Playing for $${dollars}`, canvasWidth / 2, canvasHeight - HUD_PADDING);
+  }
 }
