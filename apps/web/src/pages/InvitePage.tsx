@@ -7,6 +7,18 @@ import { formatCents, formatTime } from '@tankbet/shared/utils';
 import { BETA_MODE } from '../config';
 import type { GameInvitePreview, PublicCharity } from '@tankbet/shared/types';
 
+function HomeButton({ className = '' }: { className?: string }): React.JSX.Element {
+  const navigate = useNavigate();
+  return (
+    <button
+      onClick={() => navigate('/')}
+      className={`w-full border border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white rounded-lg text-sm font-medium py-2.5 transition-colors ${className}`}
+    >
+      Go Home
+    </button>
+  );
+}
+
 export function InvitePage(): React.JSX.Element {
   const { token } = useParams<{ token: string }>();
   const [searchParams] = useSearchParams();
@@ -159,8 +171,9 @@ export function InvitePage(): React.JSX.Element {
           : 'Invite not found.';
 
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
         <p className="text-slate-400 text-sm">{message}</p>
+        <HomeButton className="w-auto px-6" />
       </div>
     );
   }
@@ -201,12 +214,7 @@ export function InvitePage(): React.JSX.Element {
             </button>
           </div>
           {timeLeft <= 0 ? (
-            <button
-              onClick={() => navigate('/')}
-              className="mt-4 w-full border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-white text-xs font-medium py-2 rounded-lg transition-colors"
-            >
-              Home
-            </button>
+            <HomeButton className="mt-4" />
           ) : (
             <button
               onClick={() => void handleCancelInvite()}
@@ -266,21 +274,25 @@ export function InvitePage(): React.JSX.Element {
 
         {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
-        <div className="flex gap-2">
-          <button
-            onClick={() => void handleAccept()}
-            disabled={accepting || (!BETA_MODE && !selectedCharity) || timeLeft <= 0}
-            className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-          >
-            {accepting ? 'Accepting…' : 'Accept'}
-          </button>
-          <button
-            onClick={() => void handleReject()}
-            className="flex-1 border border-slate-600 text-slate-300 py-2.5 rounded-lg text-sm font-medium hover:border-slate-500 hover:text-white transition-colors"
-          >
-            Decline
-          </button>
-        </div>
+        {timeLeft <= 0 ? (
+          <HomeButton />
+        ) : (
+          <div className="flex gap-2">
+            <button
+              onClick={() => void handleAccept()}
+              disabled={accepting || (!BETA_MODE && !selectedCharity)}
+              className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            >
+              {accepting ? 'Accepting…' : 'Accept'}
+            </button>
+            <button
+              onClick={() => void handleReject()}
+              className="flex-1 border border-slate-600 text-slate-300 py-2.5 rounded-lg text-sm font-medium hover:border-slate-500 hover:text-white transition-colors"
+            >
+              Decline
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
