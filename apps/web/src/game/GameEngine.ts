@@ -656,9 +656,9 @@ export class GameEngine {
     // since they change movement direction, so don't smooth them
     this.displayOffsetAngle = 0;
 
-    // Snap to zero when negligible
-    if (Math.abs(this.displayOffsetX) < 0.1) this.displayOffsetX = 0;
-    if (Math.abs(this.displayOffsetY) < 0.1) this.displayOffsetY = 0;
+    // Snap to zero when negligible (0.5px threshold to cut off slide sooner)
+    if (Math.abs(this.displayOffsetX) < 0.5) this.displayOffsetX = 0;
+    if (Math.abs(this.displayOffsetY) < 0.5) this.displayOffsetY = 0;
   }
 
   // -------------------------------------------------------------------------
