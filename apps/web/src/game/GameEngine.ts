@@ -377,8 +377,6 @@ export class GameEngine {
     room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
       const bullet = this.activeBullets.get(data.id);
       if (bullet) {
-        bullet.x = data.x;
-        bullet.y = data.y;
         bullet.vx = data.vx;
         bullet.vy = data.vy;
       }
@@ -659,9 +657,9 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~10 → corrections converge in ~100ms. Fast enough to absorb
-    // the systematic 1-tick (2.13px) prediction error each 50ms patch.
-    const CORRECTION_RATE = 10;
+    // Rate ~4 → corrections converge in ~300ms. Slower convergence
+    // prioritizes visual smoothness over positional accuracy.
+    const CORRECTION_RATE = 4;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;
