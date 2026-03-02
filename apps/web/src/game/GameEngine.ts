@@ -163,6 +163,8 @@ export class GameEngine {
   // Gambetta reconciliation
   private inputBuffer: InputRecord[] = [];
   private predictionSeq = 0;
+  private inputSendCounter = 0;
+  private lastSentKeys: InputState = { up: false, down: false, left: false, right: false, fire: false };
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -545,11 +547,22 @@ export class GameEngine {
     const seq = this.predictionSeq;
     const prevTank = this.predictedTank;
 
-    // Send input to server every prediction tick so each tick has a unique seq.
-    // This is required for Gambetta reconciliation — without per-tick seqs,
-    // holding a key causes all buffer entries to share one seq and get discarded
-    // together, producing zero replay entries and snapping to server position.
-    this.room?.send('input', { keys: input, seq });
+    // Send input to server at ~20Hz (every 3rd tick) to avoid flooding WebSocket.
+    // Also send immediately on key state change for responsiveness.
+    // Each prediction tick still gets a unique seq for proper reconciliation.
+    this.inputSendCounter++;
+    const keysChanged =
+      input.up !== this.lastSentKeys.up ||
+      input.down !== this.lastSentKeys.down ||
+      input.left !== this.lastSentKeys.left ||
+      input.right !== this.lastSentKeys.right ||
+      input.fire !== this.lastSentKeys.fire;
+
+    if (keysChanged || this.inputSendCounter >= 3) {
+      this.room?.send('input', { keys: input, seq });
+      this.lastSentKeys = input;
+      this.inputSendCounter = 0;
+    }
 
     // Advance tank physics
     const final = this.stepTankPhysics(prevTank, input, dt);
