@@ -42,7 +42,6 @@ import type { ActiveEffectData } from '@tankbet/game-engine/powerups';
 
 interface InputMessage {
   keys: InputState;
-  seq: number;
 }
 
 export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
@@ -52,7 +51,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected wallEndpoints: Vec2[] = [];
   protected mazeWidth = 0;
   protected mazeHeight = 0;
-  protected pendingInputs = new Map<string, { keys: InputState; seq: number }>();
+  protected pendingInputs = new Map<string, { keys: InputState }>();
   protected playerCount = 0;
   protected bulletIdCounter = 0;
   protected missileIdCounter = 0;
@@ -95,7 +94,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.patchRate = 1000 / SERVER_PATCH_HZ;
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
-      this.pendingInputs.set(client.sessionId, { keys: message.keys, seq: message.seq });
+      this.pendingInputs.set(client.sessionId, { keys: message.keys });
     });
   }
 
@@ -203,7 +202,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       if (!pending) return;
 
       const input = pending.keys;
-      tank.lastAckSeq = pending.seq;
 
       const tankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
 

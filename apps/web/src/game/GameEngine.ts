@@ -160,11 +160,9 @@ export class GameEngine {
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
 
-  // Gambetta reconciliation
+  // Gambetta reconciliation (tick-count based, not seq-based)
   private inputBuffer: InputRecord[] = [];
-  private predictionSeq = 0;
-  private inputSendCounter = 0;
-  private lastSentKeys: InputState = { up: false, down: false, left: false, right: false, fire: false };
+  private lastReconciledServerTick = 0;
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -288,7 +286,7 @@ export class GameEngine {
         this.syncTankEffects(tank, sessionId);
 
         if (sessionId === this.localSessionId) {
-          // === Gambetta Reconciliation ===
+          // === Gambetta Reconciliation (tick-count based) ===
           if (!tank.alive) {
             this.predictedTank = {
               id: tank.id,
@@ -298,14 +296,25 @@ export class GameEngine {
               speed: tank.speed,
             };
             this.inputBuffer = [];
+            this.lastReconciledServerTick = room.state.serverTick;
             return;
           }
 
-          // Discard acknowledged inputs
-          const ackSeq = tank.lastAckSeq;
-          this.inputBuffer = this.inputBuffer.filter((rec) => rec.seq > ackSeq);
+          // Discard entries matching the number of server ticks processed
+          // since last reconciliation. This is a 1:1 mapping — the server
+          // ran N ticks, so we drop N entries from the front of the buffer.
+          const currentServerTick = room.state.serverTick;
+          const ticksProcessed = currentServerTick - this.lastReconciledServerTick;
+          this.lastReconciledServerTick = currentServerTick;
 
-          // Start from server position and replay unacknowledged inputs
+          if (ticksProcessed > 0 && ticksProcessed <= this.inputBuffer.length) {
+            this.inputBuffer.splice(0, ticksProcessed);
+          } else if (ticksProcessed > this.inputBuffer.length) {
+            // Server processed more ticks than we have buffered — clear and accept server state
+            this.inputBuffer = [];
+          }
+
+          // Start from server position and replay remaining (unprocessed) inputs
           let replayState: TankState = {
             id: tank.id,
             x: tank.x,
@@ -319,8 +328,6 @@ export class GameEngine {
           }
 
           // Smooth reconciliation: blend toward replay result to avoid micro-stutters.
-          // With matched fixed timesteps the error should be near-zero, but floating
-          // point and wall collision differences can still cause tiny discrepancies.
           const predicted = this.predictedTank;
           if (!predicted) {
             this.predictedTank = replayState;
@@ -502,9 +509,11 @@ export class GameEngine {
     });
 
     // -----------------------------------------------------------------------
-    // Input handler — key tracking only; input is sent per prediction tick
+    // Input handler — sends to server on key state changes only
     // -----------------------------------------------------------------------
-    this.inputHandler.attach(this.playerIndex);
+    this.inputHandler.attach(this.playerIndex, (keys: InputState) => {
+      this.room?.send('input', { keys });
+    });
 
     this.startRenderLoop();
   }
@@ -543,34 +552,16 @@ export class GameEngine {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
 
     const input = this.inputHandler.getKeys();
-    this.predictionSeq++;
-    const seq = this.predictionSeq;
     const prevTank = this.predictedTank;
-
-    // Send input to server at ~20Hz (every 3rd tick) to avoid flooding WebSocket.
-    // Also send immediately on key state change for responsiveness.
-    // Each prediction tick still gets a unique seq for proper reconciliation.
-    this.inputSendCounter++;
-    const keysChanged =
-      input.up !== this.lastSentKeys.up ||
-      input.down !== this.lastSentKeys.down ||
-      input.left !== this.lastSentKeys.left ||
-      input.right !== this.lastSentKeys.right ||
-      input.fire !== this.lastSentKeys.fire;
-
-    if (keysChanged || this.inputSendCounter >= 3) {
-      this.room?.send('input', { keys: input, seq });
-      this.lastSentKeys = input;
-      this.inputSendCounter = 0;
-    }
 
     // Advance tank physics
     const final = this.stepTankPhysics(prevTank, input, dt);
     this.predictedTank = final;
 
-    // Store in input buffer for server reconciliation replay
+    // Store in input buffer for tick-count-based reconciliation.
+    // No seq needed — buffer entries are discarded by counting server ticks.
     this.inputBuffer.push({
-      seq,
+      seq: 0,
       keys: input,
       dt,
       predictedX: final.x,
