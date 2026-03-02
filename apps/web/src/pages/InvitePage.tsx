@@ -106,6 +106,10 @@ export function InvitePage(): React.JSX.Element {
     setAccepting(true);
     setError('');
     try {
+      // Ensure the DB user record exists (new signups via invite link
+      // bypass Layout/OnboardingPage where onboard is normally called)
+      await post('/api/users/onboard', {});
+
       const result = await post<{ gameId: string }>(`/api/games/invite/${token}/accept`, {
         charityId: BETA_MODE ? null : selectedCharity,
       });
