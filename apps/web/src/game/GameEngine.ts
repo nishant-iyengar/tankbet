@@ -125,7 +125,7 @@ export interface SeatReservation {
 }
 
 const SNAP_THRESHOLD = 50; // px — teleport to server if prediction drifts further
-const RECONCILE_LERP_PER_FRAME = 0.25; // blend factor per render frame toward server target
+const RECONCILE_LERP_PER_FRAME = 0.15; // blend factor per render frame toward server target
 const RECONCILE_DONE_THRESHOLD = 0.5; // px — stop blending when error is below this
 const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
 const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;

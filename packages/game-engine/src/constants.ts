@@ -1,5 +1,5 @@
 // Physics
-export const CELL_SIZE = 80;
+export const CELL_SIZE = 120;
 export const TANK_WIDTH = 20;
 export const TANK_HEIGHT = 20;
 export const BARREL_LENGTH = 18;
@@ -19,8 +19,8 @@ export const COUNTDOWN_OVERLAY_ALPHA = 0.6; // opacity of countdown overlay
 export const HUD_PADDING = 10;            // px — HUD text inset from canvas edge
 export const TANK_COLOR_P1 = '#4ade80';   // green — player 1 tank color
 export const TANK_COLOR_P2 = '#f87171';   // red   — player 2 tank color
-export const MAZE_COLS = 13;
-export const MAZE_ROWS = 9;
+export const MAZE_COLS = 9;
+export const MAZE_ROWS = 6;
 
 // Rules
 export const GRACE_PERIOD_SECONDS = 30;

@@ -52,9 +52,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected mazeWidth = 0;
   protected mazeHeight = 0;
   protected pendingInputs = new Map<string, InputState>();
-  // Buffered input flags: true if a key was pressed at any point since the last tick.
-  // Prevents quick press+release between ticks from being lost.
-  protected pendingInputBuffer = new Map<string, InputState>();
+  // Buffered fire flag: true if fire was pressed at any point since the last tick.
+  // Only fire is buffered (momentary action). Directional keys use latest state
+  // because buffering them causes conflicting inputs (e.g. left+right both true).
+  protected pendingFireBuffer = new Map<string, boolean>();
   protected playerCount = 0;
   protected bulletIdCounter = 0;
   protected missileIdCounter = 0;
@@ -96,17 +97,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, message.keys);
-      // Buffer any pressed keys so quick press+release between ticks isn't lost
-      const keys = message.keys;
-      const existing = this.pendingInputBuffer.get(client.sessionId);
-      if (existing) {
-        if (keys.up) existing.up = true;
-        if (keys.down) existing.down = true;
-        if (keys.left) existing.left = true;
-        if (keys.right) existing.right = true;
-        if (keys.fire) existing.fire = true;
-      } else {
-        this.pendingInputBuffer.set(client.sessionId, { ...keys });
+      // Buffer fire presses so quick taps between ticks aren't lost
+      if (message.keys.fire) {
+        this.pendingFireBuffer.set(client.sessionId, true);
       }
     });
   }
@@ -202,18 +195,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const rawInput = this.pendingInputs.get(sessionId);
       if (!rawInput) return;
 
-      // Merge buffered keys so quick taps between ticks aren't missed
-      const buffered = this.pendingInputBuffer.get(sessionId);
-      const input: InputState = buffered
-        ? {
-            up: rawInput.up || buffered.up,
-            down: rawInput.down || buffered.down,
-            left: rawInput.left || buffered.left,
-            right: rawInput.right || buffered.right,
-            fire: rawInput.fire || buffered.fire,
-          }
-        : rawInput;
-      this.pendingInputBuffer.delete(sessionId);
+      // Merge buffered fire so quick taps between ticks aren't missed
+      const fireBuffered = this.pendingFireBuffer.get(sessionId) ?? false;
+      const input: InputState = { ...rawInput, fire: rawInput.fire || fireBuffered };
+      this.pendingFireBuffer.delete(sessionId);
 
       const tankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
 
