@@ -150,6 +150,9 @@ export class GameEngine {
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
 
+  // Smooth correction: server target applied continuously per-frame
+  private serverTarget: TankState | null = null;
+
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
 
@@ -272,11 +275,9 @@ export class GameEngine {
         this.syncTankEffects(tank, sessionId);
 
         if (sessionId === this.localSessionId) {
-          // === Smooth correction (no input replay) ===
-          // Instead of Gambetta reconciliation, we simply nudge the
-          // predicted position toward the server position each patch.
-          // The client prediction loop provides instant local feedback,
-          // while this correction keeps us from drifting.
+          // Store the latest server position as our correction target.
+          // Actual blending happens per-frame in applySmoothing() for
+          // continuous, jitter-free convergence instead of 20Hz jumps.
           const serverState: TankState = {
             id: tank.id,
             x: tank.x,
@@ -287,31 +288,25 @@ export class GameEngine {
 
           if (!tank.alive) {
             this.predictedTank = serverState;
+            this.serverTarget = null;
             return;
           }
 
-          const predicted = this.predictedTank;
-          if (!predicted) {
+          if (!this.predictedTank) {
             this.predictedTank = serverState;
+            this.serverTarget = null;
           } else {
-            const dx = serverState.x - predicted.x;
-            const dy = serverState.y - predicted.y;
+            // Check for large errors — snap immediately
+            const dx = serverState.x - this.predictedTank.x;
+            const dy = serverState.y - this.predictedTank.y;
             const errorSq = dx * dx + dy * dy;
-            const dAngle = shortestAngleDelta(serverState.angle, predicted.angle);
+            const dAngle = shortestAngleDelta(serverState.angle, this.predictedTank.angle);
 
             if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX || Math.abs(dAngle) > 30) {
-              // Large error — snap immediately
               this.predictedTank = serverState;
+              this.serverTarget = null;
             } else {
-              // Gently blend toward server position each patch.
-              // ~20% per patch at 20Hz = smooth convergence within ~200ms
-              const blend = 0.2;
-              this.predictedTank = {
-                ...predicted,
-                x: errorSq > 0.25 ? predicted.x + dx * blend : predicted.x,
-                y: errorSq > 0.25 ? predicted.y + dy * blend : predicted.y,
-                angle: Math.abs(dAngle) > 0.1 ? predicted.angle + dAngle * blend : predicted.angle,
-              };
+              this.serverTarget = serverState;
             }
           }
         } else {
@@ -628,6 +623,43 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Per-frame smooth correction toward server target
+  // -------------------------------------------------------------------------
+
+  private applySmoothing(frameDt: number): void {
+    if (!this.predictedTank || !this.serverTarget) return;
+
+    const dx = this.serverTarget.x - this.predictedTank.x;
+    const dy = this.serverTarget.y - this.predictedTank.y;
+    const errorSq = dx * dx + dy * dy;
+    const dAngle = shortestAngleDelta(this.serverTarget.angle, this.predictedTank.angle);
+
+    // Convergence rate: blend ~10x/sec → at 60fps, ~16% per frame.
+    // Using exponential decay: factor = 1 - e^(-rate * dt)
+    const rate = 10;
+    const blend = 1 - Math.exp(-rate * frameDt);
+
+    if (errorSq > 0.25) {
+      this.predictedTank = {
+        ...this.predictedTank,
+        x: this.predictedTank.x + dx * blend,
+        y: this.predictedTank.y + dy * blend,
+      };
+    }
+    if (Math.abs(dAngle) > 0.1) {
+      this.predictedTank = {
+        ...this.predictedTank,
+        angle: this.predictedTank.angle + dAngle * blend,
+      };
+    }
+
+    // Clear target once converged (error < 0.5px and < 0.1°)
+    if (errorSq < 0.25 && Math.abs(dAngle) < 0.1) {
+      this.serverTarget = null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Render loop
   // -------------------------------------------------------------------------
 
@@ -663,6 +695,9 @@ export class GameEngine {
       this.runPrediction(PHYSICS_STEP);
       this.physicsAccumulator -= PHYSICS_STEP;
     }
+
+    // Smoothly correct toward server target every frame
+    this.applySmoothing(frameDt);
 
     // Interpolate remote tanks
     this.interpolateRemoteTanks();
