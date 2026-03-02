@@ -258,8 +258,9 @@ export class GameEngine {
     this.room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
       const bullet = this.activeBullets.get(data.id);
       if (bullet) {
-        bullet.x = data.x;
-        bullet.y = data.y;
+        // Only correct velocity — the client already bounced locally so the
+        // position is close enough. Correcting position pulls the bullet back
+        // toward the wall and causes re-bounce loops.
         bullet.vx = data.vx;
         bullet.vy = data.vy;
       }
@@ -267,16 +268,19 @@ export class GameEngine {
 
     this.room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
       this.activeBullets.delete(data.id);
+
     });
 
     this.room.onMessage('bullet:clear', () => {
       this.activeBullets.clear();
       this.pendingLocalBullets.clear();
+
     });
 
     this.room.onMessage('bullet:sync', (bullets: BulletState[]) => {
       this.activeBullets.clear();
       this.pendingLocalBullets.clear();
+
       for (const b of bullets) {
         this.activeBullets.set(b.id, { ...b });
       }
@@ -299,8 +303,7 @@ export class GameEngine {
     this.room.onMessage('missile:bounce', (data: MissileBounceEvent) => {
       const missile = this.activeMissiles.get(data.id);
       if (missile) {
-        missile.x = data.x;
-        missile.y = data.y;
+        // Only correct velocity — client already bounced locally
         missile.vx = data.vx;
         missile.vy = data.vy;
       }
@@ -308,14 +311,17 @@ export class GameEngine {
 
     this.room.onMessage('missile:remove', (data: MissileRemoveEvent) => {
       this.activeMissiles.delete(data.id);
+
     });
 
     this.room.onMessage('missile:clear', () => {
       this.activeMissiles.clear();
+
     });
 
     this.room.onMessage('missile:sync', (missiles: MissileState[]) => {
       this.activeMissiles.clear();
+
       for (const m of missiles) {
         this.activeMissiles.set(m.id, { ...m });
       }
@@ -578,7 +584,8 @@ export class GameEngine {
       }
     }
 
-    // Advance ALL bullets locally at 60fps — handles wall bounces correctly
+    // Advance bullets locally at 60fps with client-side wall bounce detection
+    // for immediate visual feedback. Server bounce events smooth any discrepancy.
     const toRemove: string[] = [];
     for (const [id, bullet] of this.activeBullets) {
       const advanced = advanceBullet(bullet, dt, this.mazeSegments);
@@ -617,6 +624,8 @@ export class GameEngine {
       }
     }
 
+    // Advance missiles with homing + client-side wall bounce detection.
+    // Server bounce events smooth any discrepancy.
     const missileToRemove: string[] = [];
     for (const [id, missile] of this.activeMissiles) {
       const prevX = missile.x;
@@ -628,7 +637,7 @@ export class GameEngine {
         continue;
       }
 
-      // Handle wall bounces
+      // Handle wall bounces client-side for immediate visual feedback
       let result: BulletState = {
         id: updated.id,
         ownerId: updated.ownerId,
