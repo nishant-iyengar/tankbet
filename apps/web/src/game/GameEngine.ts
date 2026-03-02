@@ -325,19 +325,22 @@ export class GameEngine {
             const dx = replayState.x - predicted.x;
             const dy = replayState.y - predicted.y;
             const errorSq = dx * dx + dy * dy;
+            const dAngle = shortestAngleDelta(replayState.angle, predicted.angle);
+            const angleBig = Math.abs(dAngle) > 10;
 
-            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX) {
+            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX || angleBig) {
               // Large error — snap immediately
               this.predictedTank = replayState;
-            } else if (errorSq > 0.25) {
-              // Small error — blend toward reconciled position
+            } else {
+              // Blend position and angle toward reconciled values
+              const blend = 0.3;
               this.predictedTank = {
                 ...replayState,
-                x: predicted.x + dx * 0.3,
-                y: predicted.y + dy * 0.3,
+                x: errorSq > 0.25 ? predicted.x + dx * blend : predicted.x,
+                y: errorSq > 0.25 ? predicted.y + dy * blend : predicted.y,
+                angle: Math.abs(dAngle) > 0.1 ? predicted.angle + dAngle * blend : predicted.angle,
               };
             }
-            // else: negligible error (<0.5px), keep current prediction
           }
         } else {
           // === Remote tank interpolation update ===
