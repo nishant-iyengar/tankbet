@@ -657,9 +657,9 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~0.25 → corrections converge in ~4s. Very slow convergence
-    // maximally prioritizes visual smoothness over positional accuracy.
-    const CORRECTION_RATE = 0.25;
+    // Rate ~0.5 → corrections converge in ~2s. Sweet spot between
+    // visual smoothness and positional accuracy.
+    const CORRECTION_RATE = 0.5;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;
