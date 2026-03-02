@@ -28,7 +28,8 @@ export class InputHandler {
 
   attach(playerIndex: 0 | 1, onInput?: (keys: InputState, seq: number) => void): void {
     this.onInput = onInput ?? null;
-    this.keyMap = playerIndex === 0 ? P1_KEYS : P2_KEYS;
+    // Both players use the same keys — each player is on their own device
+    this.keyMap = P1_KEYS;
     this.keys = { up: false, down: false, left: false, right: false, fire: false };
     this.seq = 0;
 
