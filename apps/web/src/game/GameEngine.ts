@@ -150,8 +150,10 @@ export class GameEngine {
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
 
-  // Smooth correction: server target applied continuously per-frame
-  private serverTarget: TankState | null = null;
+  // Visual offset correction: render-only, never touches simulation
+  private displayOffsetX = 0;
+  private displayOffsetY = 0;
+  private displayOffsetAngle = 0;
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -275,9 +277,11 @@ export class GameEngine {
         this.syncTankEffects(tank, sessionId);
 
         if (sessionId === this.localSessionId) {
-          // Store the latest server position as our correction target.
-          // Actual blending happens per-frame in applySmoothing() for
-          // continuous, jitter-free convergence instead of 20Hz jumps.
+          // === Visual offset correction ===
+          // Snap simulation to server authority. Absorb the visual
+          // difference into a render-only offset that decays per-frame.
+          // This keeps prediction clean (never corrupted by blending)
+          // while making corrections imperceptible to the player.
           const serverState: TankState = {
             id: tank.id,
             x: tank.x,
@@ -286,27 +290,37 @@ export class GameEngine {
             speed: tank.speed,
           };
 
-          if (!tank.alive) {
+          if (!tank.alive || this.currentPhase !== 'playing') {
+            // Not playing — accept server state directly, no offset
             this.predictedTank = serverState;
-            this.serverTarget = null;
+            this.displayOffsetX = 0;
+            this.displayOffsetY = 0;
+            this.displayOffsetAngle = 0;
             return;
           }
 
           if (!this.predictedTank) {
             this.predictedTank = serverState;
-            this.serverTarget = null;
           } else {
-            // Check for large errors — snap immediately
-            const dx = serverState.x - this.predictedTank.x;
-            const dy = serverState.y - this.predictedTank.y;
-            const errorSq = dx * dx + dy * dy;
-            const dAngle = shortestAngleDelta(serverState.angle, this.predictedTank.angle);
+            // Error = where we think we are minus where server says
+            const errorX = this.predictedTank.x - serverState.x;
+            const errorY = this.predictedTank.y - serverState.y;
+            const errorAngle = shortestAngleDelta(this.predictedTank.angle, serverState.angle);
+            const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
 
-            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX || Math.abs(dAngle) > 30) {
+            if (errorDist > SNAP_THRESHOLD_PX || Math.abs(errorAngle) > 30) {
+              // Teleport — too far off, snap everything
               this.predictedTank = serverState;
-              this.serverTarget = null;
+              this.displayOffsetX = 0;
+              this.displayOffsetY = 0;
+              this.displayOffsetAngle = 0;
             } else {
-              this.serverTarget = serverState;
+              // Absorb error into display offset so rendered position
+              // stays visually at the old spot, then snap sim to server
+              this.displayOffsetX += errorX;
+              this.displayOffsetY += errorY;
+              this.displayOffsetAngle += errorAngle;
+              this.predictedTank = serverState;
             }
           }
         } else {
@@ -507,11 +521,16 @@ export class GameEngine {
 
   private runPrediction(dt: number): void {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
+    // Don't predict tank during non-playing phases (countdown, waiting, etc.)
+    // to avoid accumulating drift that causes flicker on phase transition
+    const skipTankPrediction = this.currentPhase !== 'playing';
 
     const input = this.inputHandler.getKeys();
 
     // Advance tank physics locally for instant feedback
-    this.predictedTank = this.stepTankPhysics(this.predictedTank, input, dt);
+    if (!skipTankPrediction) {
+      this.predictedTank = this.stepTankPhysics(this.predictedTank, input, dt);
+    }
 
     // Advance bullets with wall bounce
     const bulletToRemove: string[] = [];
@@ -623,40 +642,22 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Per-frame smooth correction toward server target
+  // Per-frame display offset decay (render-only, never touches simulation)
   // -------------------------------------------------------------------------
 
-  private applySmoothing(frameDt: number): void {
-    if (!this.predictedTank || !this.serverTarget) return;
+  private decayDisplayOffset(frameDt: number): void {
+    // Rate ~4 → corrections converge in ~300ms (smoother, sacrifices snappiness)
+    const CORRECTION_RATE = 4;
+    const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
-    const dx = this.serverTarget.x - this.predictedTank.x;
-    const dy = this.serverTarget.y - this.predictedTank.y;
-    const errorSq = dx * dx + dy * dy;
-    const dAngle = shortestAngleDelta(this.serverTarget.angle, this.predictedTank.angle);
+    this.displayOffsetX *= keep;
+    this.displayOffsetY *= keep;
+    this.displayOffsetAngle *= keep;
 
-    // Convergence rate: blend ~10x/sec → at 60fps, ~16% per frame.
-    // Using exponential decay: factor = 1 - e^(-rate * dt)
-    const rate = 10;
-    const blend = 1 - Math.exp(-rate * frameDt);
-
-    if (errorSq > 0.25) {
-      this.predictedTank = {
-        ...this.predictedTank,
-        x: this.predictedTank.x + dx * blend,
-        y: this.predictedTank.y + dy * blend,
-      };
-    }
-    if (Math.abs(dAngle) > 0.1) {
-      this.predictedTank = {
-        ...this.predictedTank,
-        angle: this.predictedTank.angle + dAngle * blend,
-      };
-    }
-
-    // Clear target once converged (error < 0.5px and < 0.1°)
-    if (errorSq < 0.25 && Math.abs(dAngle) < 0.1) {
-      this.serverTarget = null;
-    }
+    // Snap to zero when negligible
+    if (Math.abs(this.displayOffsetX) < 0.1) this.displayOffsetX = 0;
+    if (Math.abs(this.displayOffsetY) < 0.1) this.displayOffsetY = 0;
+    if (Math.abs(this.displayOffsetAngle) < 0.05) this.displayOffsetAngle = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -696,8 +697,8 @@ export class GameEngine {
       this.physicsAccumulator -= PHYSICS_STEP;
     }
 
-    // Smoothly correct toward server target every frame
-    this.applySmoothing(frameDt);
+    // Decay visual offset every frame (render-only correction)
+    this.decayDisplayOffset(frameDt);
 
     // Interpolate remote tanks
     this.interpolateRemoteTanks();
@@ -710,13 +711,19 @@ export class GameEngine {
     // Draw tanks
     const tankColors = ['#4ade80', '#f87171'];
 
-    // Draw local tank
+    // Draw local tank at simulation position + visual offset
     if (this.predictedTank) {
       const localAlive = this.tankAliveState.get(this.localSessionId);
       if (localAlive) {
         const localOrderIdx = this.tankSessionOrder.indexOf(this.localSessionId);
         const localColor = tankColors[localOrderIdx >= 0 ? localOrderIdx % 2 : 0];
-        drawTank(this.ctx, this.predictedTank, localColor);
+        const renderState: TankState = {
+          ...this.predictedTank,
+          x: this.predictedTank.x + this.displayOffsetX,
+          y: this.predictedTank.y + this.displayOffsetY,
+          angle: this.predictedTank.angle + this.displayOffsetAngle,
+        };
+        drawTank(this.ctx, renderState, localColor);
       }
     }
 
