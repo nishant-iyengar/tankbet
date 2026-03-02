@@ -164,8 +164,9 @@ export function canFireBullet(now: number, lastFiredAt: number, currentBulletCou
 
 export function createBullet(id: string, tank: TankState): BulletState {
   const rad = degreesToRadians(tank.angle);
-  const tipX = tank.x + Math.cos(rad) * BARREL_LENGTH;
-  const tipY = tank.y + Math.sin(rad) * BARREL_LENGTH;
+  const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2; // spawn half a tank length ahead of the tank
+  const tipX = tank.x + Math.cos(rad) * spawnDist;
+  const tipY = tank.y + Math.sin(rad) * spawnDist;
 
   return {
     id,
@@ -415,8 +416,9 @@ export type MissileState = {
 
 export function createMissile(id: string, tank: TankState, enemyId: string): MissileState {
   const rad = degreesToRadians(tank.angle);
-  const tipX = tank.x + Math.cos(rad) * BARREL_LENGTH;
-  const tipY = tank.y + Math.sin(rad) * BARREL_LENGTH;
+  const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2; // spawn half a tank length ahead of the tank
+  const tipX = tank.x + Math.cos(rad) * spawnDist;
+  const tipY = tank.y + Math.sin(rad) * spawnDist;
   return {
     id,
     ownerId: tank.id,

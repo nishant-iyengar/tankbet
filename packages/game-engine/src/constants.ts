@@ -41,7 +41,7 @@ export const SERVER_TICK_HZ = 30;
 export const BULLET_FIRE_COOLDOWN_MS = 170; // min ms between shots per tank
 export const MISSILE_FIRE_EXTRA_COOLDOWN_MS = 100; // extra cooldown after firing a missile to prevent accidental bullet
 export const CLIENT_FPS = 60;
-export const INTERPOLATION_DELAY_MS = 125;
+export const INTERPOLATION_DELAY_MS = 200;
 
 // Powerups
 export const PowerupType = {
@@ -55,7 +55,7 @@ export const POWERUP_MAX_ON_FIELD = 2;
 export const POWERUP_COLLECTION_RADIUS = 22; // px — proximity to auto-collect
 
 // Targeting missile
-export const MISSILE_SPEED = 132;                // px/s
+export const MISSILE_SPEED = 160;                // px/s (~21% faster than original 132)
 export const MISSILE_RADIUS = 3;                 // px — collision radius
 export const MISSILE_HOMING_DELAY_S = 2;         // seconds before switching to closest-tank homing
 export const MISSILE_TURN_SPEED_DEG = 90;        // deg/s — sluggish homing turn rate (intentionally dumb)

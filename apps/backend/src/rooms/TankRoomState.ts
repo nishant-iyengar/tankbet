@@ -3,7 +3,6 @@
 export {
   ActiveEffect,
   Powerup,
-  Missile,
   Tank,
   TankRoomState,
 } from '@tankbet/game-engine/schema';

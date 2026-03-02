@@ -1,6 +1,6 @@
 import { Room } from '@colyseus/core';
 import type { Client } from '@colyseus/core';
-import { TankRoomState, Tank, Powerup, Missile, ActiveEffect } from './TankRoomState';
+import { TankRoomState, Tank, Powerup, ActiveEffect } from './TankRoomState';
 import {
   SERVER_TICK_HZ,
   MAZE_COLS,
@@ -57,6 +57,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected missileIdCounter = 0;
   protected powerupIdCounter = 0;
   protected bullets: BulletState[] = [];
+  protected missiles: MissileState[] = [];
   protected missileTargets = new Map<string, string>();
   protected powerupSpawnTimer = 0;
   protected nextPowerupSpawnIn = 10;
@@ -115,6 +116,16 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
     client.send('maze', { segments: this.wallSegments });
     client.send('bullet:sync', this.bullets);
+    client.send('missile:sync', this.missiles.map((m) => ({
+      id: m.id,
+      ownerId: m.ownerId,
+      x: m.x,
+      y: m.y,
+      vx: m.vx,
+      vy: m.vy,
+      age: m.age,
+      initialTargetId: this.missileTargets.get(m.id) ?? '',
+    })));
   }
 
   protected startGameLoop(): void {
@@ -132,7 +143,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     // Clear all projectiles and their tracking data
     this.bullets = [];
     this.broadcast('bullet:clear');
-    this.state.missiles.splice(0, this.state.missiles.length);
+    this.missiles = [];
+    this.broadcast('missile:clear');
     this.state.powerups.splice(0, this.state.powerups.length);
     this.missileTargets.clear();
     this.lastFiredAt.clear();
@@ -168,7 +180,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   private tick(dt: number): void {
     if (this.state.phase !== 'playing') return;
 
-    // 1. Process pending inputs → move tanks
+    // 1. Process pending inputs → move tanks + fire
     this.state.tanks.forEach((tank, sessionId) => {
       if (!tank.alive) return;
 
@@ -201,6 +213,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const cooldownReady = (now - lastFired) >= BULLET_FIRE_COOLDOWN_MS;
 
       if (input.fire && hasMissileAmmo && cooldownReady) {
+        console.log(`[server] MISSILE fired by ${sessionId}, setting cooldown to now+${MISSILE_FIRE_EXTRA_COOLDOWN_MS}`);
         // Add extra cooldown after missile to prevent accidental bullet fire
         this.lastFiredAt.set(sessionId, now + MISSILE_FIRE_EXTRA_COOLDOWN_MS);
 
@@ -211,16 +224,17 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
         this.missileIdCounter++;
         const ms: MissileState = createMissile(`m-${this.missileIdCounter}`, tankState, enemyId);
-        const missile = new Missile();
-        missile.id = ms.id;
-        missile.ownerId = ms.ownerId;
-        missile.x = ms.x;
-        missile.y = ms.y;
-        missile.vx = ms.vx;
-        missile.vy = ms.vy;
-        missile.age = 0;
-        this.missileTargets.set(missile.id, ms.initialTargetId);
-        this.state.missiles.push(missile);
+        this.missiles.push(ms);
+        this.missileTargets.set(ms.id, ms.initialTargetId);
+        this.broadcast('missile:fire', {
+          id: ms.id,
+          ownerId: ms.ownerId,
+          x: ms.x,
+          y: ms.y,
+          vx: ms.vx,
+          vy: ms.vy,
+          initialTargetId: ms.initialTargetId,
+        });
 
         const effect = tank.effects[missileEffectIdx];
         if (effect) {
@@ -230,6 +244,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
           }
         }
       } else if (input.fire && canFire) {
+        console.log(`[server] BULLET fired by ${sessionId}, missile ammo=${hasMissileAmmo}, cooldownReady=${cooldownReady}`);
         this.lastFiredAt.set(sessionId, now);
         this.bulletIdCounter++;
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState);
@@ -322,30 +337,24 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     });
 
     const missilesToRemove: number[] = [];
-    for (let i = 0; i < this.state.missiles.length; i++) {
-      const missile = this.state.missiles[i];
+    for (let i = 0; i < this.missiles.length; i++) {
+      const missile = this.missiles[i];
       if (!missile) continue;
 
-      const ms: MissileState = {
-        id: missile.id,
-        ownerId: missile.ownerId,
-        x: missile.x,
-        y: missile.y,
-        vx: missile.vx,
-        vy: missile.vy,
-        age: missile.age,
-        initialTargetId: this.missileTargets.get(missile.id) ?? '',
-      };
+      const prevX = missile.x;
+      const prevY = missile.y;
+      const prevVx = missile.vx;
+      const prevVy = missile.vy;
 
-      const updated = updateMissile(ms, tankSnapshots, this.wallSegments, dt);
+      const updated = updateMissile(missile, tankSnapshots, this.wallSegments, dt);
 
       if (updated.age >= MISSILE_LIFETIME_SECONDS) {
         missilesToRemove.push(i);
+        this.broadcast('missile:remove', { id: missile.id });
         continue;
       }
 
       // Missiles bounce off walls (walls are indestructible).
-      // Smart steering means this should rarely trigger.
       let missileResult: BulletState = {
         id: missile.id,
         ownerId: missile.ownerId,
@@ -355,12 +364,25 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         vy: updated.vy,
         age: updated.age,
       };
+      let bounced = false;
       for (const wall of this.wallSegments) {
-        const { crossed, hitX, hitY } = bulletCrossesWall(ms.x, ms.y, missileResult.x, missileResult.y, wall);
+        const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, missileResult.x, missileResult.y, wall);
         if (crossed) {
           missileResult = reflectBulletAtWall(missileResult, wall, hitX, hitY, MISSILE_RADIUS);
+          bounced = true;
           break;
         }
+      }
+
+      // Detect bounce: velocity direction changed or wall reflection happened
+      if (bounced || missileResult.vx !== prevVx || missileResult.vy !== prevVy) {
+        this.broadcast('missile:bounce', {
+          id: missileResult.id,
+          x: missileResult.x,
+          y: missileResult.y,
+          vx: missileResult.vx,
+          vy: missileResult.vy,
+        });
       }
 
       let hitTank = false;
@@ -370,6 +392,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         if (checkCircleTankCollision(missileResult.x, missileResult.y, MISSILE_RADIUS, ts)) {
           hitTank = true;
           missilesToRemove.push(i);
+          this.broadcast('missile:remove', { id: missile.id });
           this.onBulletHitTank(sessionId);
         }
       });
@@ -380,14 +403,15 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         missile.vx = missileResult.vx;
         missile.vy = missileResult.vy;
         missile.age = updated.age;
+        missile.initialTargetId = updated.initialTargetId;
       }
     }
 
     const uniqueMissileRemove = [...new Set(missilesToRemove)].sort((a, b) => b - a);
     for (const idx of uniqueMissileRemove) {
-      const m = this.state.missiles[idx];
+      const m = this.missiles[idx];
       if (m) this.missileTargets.delete(m.id);
-      this.state.missiles.splice(idx, 1);
+      this.missiles.splice(idx, 1);
     }
 
     // 4. Check powerup collection

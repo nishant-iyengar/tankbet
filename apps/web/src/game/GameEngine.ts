@@ -10,6 +10,9 @@ import {
   canFireBullet,
   createBullet,
   advanceBullet,
+  updateMissile,
+  bulletCrossesWall,
+  reflectBulletAtWall,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import type { ActiveEffectData } from '@tankbet/game-engine/powerups';
@@ -19,6 +22,8 @@ import {
   CELL_SIZE,
   INTERPOLATION_DELAY_MS,
   PowerupType,
+  MISSILE_LIFETIME_SECONDS,
+  MISSILE_RADIUS,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -55,7 +60,6 @@ interface PowerupSnapshot {
 
 interface SnapshotState {
   tanks: Map<string, ClientTankState>;
-  missiles: MissileState[];
   powerups: PowerupSnapshot[];
   countdown: number;
   phase: string;
@@ -87,6 +91,28 @@ interface BulletBounceEvent {
 }
 
 interface BulletRemoveEvent {
+  id: string;
+}
+
+interface MissileFireEvent {
+  id: string;
+  ownerId: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  initialTargetId: string;
+}
+
+interface MissileBounceEvent {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+interface MissileRemoveEvent {
   id: string;
 }
 
@@ -137,6 +163,8 @@ export class GameEngine {
 
   // Event-based bullet sync
   private activeBullets = new Map<string, BulletState>();
+  // Event-based missile sync
+  private activeMissiles = new Map<string, MissileState>();
   // Predicted bullets awaiting server confirmation (local player only)
   private pendingLocalBullets = new Map<string, BulletState>();
   private nextLocalBulletSeq = 0;
@@ -251,6 +279,45 @@ export class GameEngine {
       }
     });
 
+    // Missile event handlers
+    this.room.onMessage('missile:fire', (data: MissileFireEvent) => {
+      this.activeMissiles.set(data.id, {
+        id: data.id,
+        ownerId: data.ownerId,
+        x: data.x,
+        y: data.y,
+        vx: data.vx,
+        vy: data.vy,
+        age: 0,
+        initialTargetId: data.initialTargetId,
+      });
+    });
+
+    this.room.onMessage('missile:bounce', (data: MissileBounceEvent) => {
+      const missile = this.activeMissiles.get(data.id);
+      if (missile) {
+        missile.x = data.x;
+        missile.y = data.y;
+        missile.vx = data.vx;
+        missile.vy = data.vy;
+      }
+    });
+
+    this.room.onMessage('missile:remove', (data: MissileRemoveEvent) => {
+      this.activeMissiles.delete(data.id);
+    });
+
+    this.room.onMessage('missile:clear', () => {
+      this.activeMissiles.clear();
+    });
+
+    this.room.onMessage('missile:sync', (missiles: MissileState[]) => {
+      this.activeMissiles.clear();
+      for (const m of missiles) {
+        this.activeMissiles.set(m.id, { ...m });
+      }
+    });
+
     this.room.onStateChange((state: TankRoomState) => {
       const snapshot = this.parseState(state);
 
@@ -352,20 +419,6 @@ export class GameEngine {
       });
     });
 
-    const missiles: MissileState[] = [];
-    state.missiles.forEach((m) => {
-      missiles.push({
-        id: m.id,
-        ownerId: m.ownerId,
-        x: m.x,
-        y: m.y,
-        vx: m.vx,
-        vy: m.vy,
-        age: m.age,
-        initialTargetId: '',
-      });
-    });
-
     const powerups: PowerupSnapshot[] = [];
     state.powerups.forEach((p) => {
       powerups.push({
@@ -383,7 +436,6 @@ export class GameEngine {
 
     return {
       tanks,
-      missiles,
       powerups,
       countdown: state.countdown,
       phase: state.phase,
@@ -445,26 +497,8 @@ export class GameEngine {
       }
     });
 
-    const missiles: MissileState[] = after.state.missiles.map((aMissile) => {
-      const bMissile = before.state.missiles.find((m) => m.id === aMissile.id);
-      if (bMissile) {
-        return {
-          id: aMissile.id,
-          ownerId: aMissile.ownerId,
-          x: bMissile.x + (aMissile.x - bMissile.x) * t,
-          y: bMissile.y + (aMissile.y - bMissile.y) * t,
-          vx: aMissile.vx,
-          vy: aMissile.vy,
-          age: aMissile.age,
-          initialTargetId: aMissile.initialTargetId,
-        };
-      }
-      return aMissile;
-    });
-
     return {
       tanks,
-      missiles,
       powerups: after.state.powerups,
       countdown: after.state.countdown,
       phase: after.state.phase,
@@ -553,6 +587,65 @@ export class GameEngine {
       this.activeBullets.delete(id);
       this.pendingLocalBullets.delete(id);
     }
+
+    // Advance missiles locally at 60fps
+    // Build tank snapshots once for homing targets
+    const missileTankSnapshots: TankState[] = [];
+    const interpState = this.getInterpolatedState();
+    if (interpState) {
+      interpState.tanks.forEach((t) => {
+        if (t.alive) {
+          missileTankSnapshots.push({ id: t.id, x: t.x, y: t.y, angle: t.angle, speed: 0 });
+        }
+      });
+    }
+    // Override local tank with prediction
+    if (this.predictedTank) {
+      const idx = missileTankSnapshots.findIndex((t) => t.id === this.predictedTank?.id);
+      if (idx >= 0) {
+        missileTankSnapshots[idx] = this.predictedTank;
+      }
+    }
+
+    const missileToRemove: string[] = [];
+    for (const [id, missile] of this.activeMissiles) {
+      const prevX = missile.x;
+      const prevY = missile.y;
+      const updated = updateMissile(missile, missileTankSnapshots, this.mazeSegments, dt);
+
+      if (updated.age >= MISSILE_LIFETIME_SECONDS) {
+        missileToRemove.push(id);
+        continue;
+      }
+
+      // Handle wall bounces
+      let result: BulletState = {
+        id: updated.id,
+        ownerId: updated.ownerId,
+        x: updated.x,
+        y: updated.y,
+        vx: updated.vx,
+        vy: updated.vy,
+        age: updated.age,
+      };
+      for (const wall of this.mazeSegments) {
+        const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, result.x, result.y, wall);
+        if (crossed) {
+          result = reflectBulletAtWall(result, wall, hitX, hitY, MISSILE_RADIUS);
+          break;
+        }
+      }
+
+      missile.x = result.x;
+      missile.y = result.y;
+      missile.vx = result.vx;
+      missile.vy = result.vy;
+      missile.age = updated.age;
+      missile.initialTargetId = updated.initialTargetId;
+    }
+    for (const id of missileToRemove) {
+      this.activeMissiles.delete(id);
+    }
   }
 
   private draw(): void {
@@ -607,7 +700,7 @@ export class GameEngine {
       drawBullet(this.ctx, bullet);
     }
 
-    for (const missile of state.missiles) {
+    for (const missile of this.activeMissiles.values()) {
       drawMissile(this.ctx, missile);
     }
 

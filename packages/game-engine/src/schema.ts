@@ -25,25 +25,6 @@ export interface Powerup {
   y: number;
 }
 
-export const Missile = schema({
-  id:      { type: 'string',  default: '' },
-  ownerId: { type: 'string',  default: '' },
-  x:       { type: 'float32', default: 0 },
-  y:       { type: 'float32', default: 0 },
-  vx:      { type: 'float32', default: 0 },
-  vy:      { type: 'float32', default: 0 },
-  age:     { type: 'float32', default: 0 },
-}, 'Missile');
-export interface Missile {
-  id: string;
-  ownerId: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  age: number;
-}
-
 export const Tank = schema({
   id:    { type: 'string',  default: '' },
   x:     { type: 'float32', default: 0 },
@@ -66,7 +47,6 @@ export type GamePhase = 'waiting' | 'countdown' | 'playing' | 'resolving' | 'end
 export const TankRoomState = schema({
   tanks:         { map: Tank },
   powerups:      [Powerup],
-  missiles:      [Missile],
   countdown:     { type: 'int8',   default: GAME_START_COUNTDOWN_SECONDS },
   phase:         { type: 'string', default: 'waiting' },
   winnerId:      { type: 'string', default: '' },
@@ -76,7 +56,6 @@ export const TankRoomState = schema({
 export interface TankRoomState {
   tanks:         MapSchema<Tank>;
   powerups:      ArraySchema<Powerup>;
-  missiles:      ArraySchema<Missile>;
   countdown:     number;
   phase:         string;
   winnerId:      string;
