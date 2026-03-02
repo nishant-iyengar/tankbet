@@ -1,10 +1,15 @@
 import type { Room } from '@colyseus/sdk';
 import { getStateCallbacks } from '@colyseus/sdk';
 import type { Client } from '@colyseus/sdk';
-import type { InputState, TankState, BulletState, MissileState } from '@tankbet/game-engine/physics';
+import type { InputState, TankState, BulletState, MissileState, Vec2 } from '@tankbet/game-engine/physics';
 import {
   shortestAngleDelta,
   degreesToRadians,
+  updateTank,
+  clampTankToMaze,
+  collideTankWithWalls,
+  collideTankWithEndpoints,
+  extractWallEndpoints,
   advanceBullet,
   updateMissile,
   bulletCrossesWall,
@@ -19,6 +24,7 @@ import {
   PHYSICS_STEP,
   MISSILE_RADIUS,
   MISSILE_LIFETIME_SECONDS,
+  SNAP_THRESHOLD_PX,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -39,7 +45,7 @@ import { InputHandler } from './InputHandler';
 // Interfaces
 // ---------------------------------------------------------------------------
 
-interface InterpolatedTank {
+interface RemoteTankState {
   x: number;
   y: number;
   angle: number;
@@ -117,7 +123,7 @@ const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
 const MAX_PHYSICS_STEPS_PER_FRAME = 6;
 
 // ---------------------------------------------------------------------------
-// GameEngine — Pure interpolation, no client-side prediction
+// GameEngine
 // ---------------------------------------------------------------------------
 
 export class GameEngine {
@@ -138,18 +144,29 @@ export class GameEngine {
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
 
-  // All tanks use interpolation (local and remote — no prediction)
-  private tanks = new Map<string, InterpolatedTank>();
-
-  // Projectile advancement timing
-  private lastFrameTime = 0;
+  // Client-side prediction state
+  private predictedTank: TankState | null = null;
+  private wallEndpoints: Vec2[] = [];
+  private lastPredictionTime = 0;
   private physicsAccumulator = 0;
+
+  // 1-tick input delay: match server input timing to eliminate prediction error
+  private delayedInput: InputState = { up: false, down: false, left: false, right: false, fire: false };
+
+  // Visual offset correction: render-only, never touches simulation
+  private displayOffsetX = 0;
+  private displayOffsetY = 0;
+  private displayOffsetAngle = 0;
+
+
+  // Remote tank interpolation
+  private remoteTanks = new Map<string, RemoteTankState>();
 
   // Projectile state (event-driven)
   private activeBullets = new Map<string, BulletState>();
   private activeMissiles = new Map<string, MissileState>();
 
-  // Game state tracking
+  // Game state tracking (replaces parseState/stateBuffer)
   private currentPhase = 'waiting';
   private currentCountdown = 0;
   private currentWinnerId = '';
@@ -200,6 +217,7 @@ export class GameEngine {
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
+      this.wallEndpoints = extractWallEndpoints(data.segments);
     });
 
     // -----------------------------------------------------------------------
@@ -210,32 +228,48 @@ export class GameEngine {
     const $ = getCallbacks(room.state);
 
     // -----------------------------------------------------------------------
-    // Tank schema callbacks — all tanks use the same interpolation approach
+    // Tank schema callbacks
     // -----------------------------------------------------------------------
+    // NOTE: $.tanks.onChange is NOT recursive for Schema children in Colyseus 0.14+.
+    // Property changes on individual Tank instances (x, y, alive, etc.) must be
+    // listened to via per-instance callbacks registered inside onAdd.
     $.tanks.onAdd((tank, sessionId) => {
+      // Track insertion order for color assignment
       if (!this.tankSessionOrder.includes(sessionId)) {
         this.tankSessionOrder.push(sessionId);
       }
 
-      this.tanks.set(sessionId, {
-        x: tank.x,
-        y: tank.y,
-        angle: tank.angle,
-        speed: tank.speed,
-        prevX: tank.x,
-        prevY: tank.y,
-        prevAngle: tank.angle,
-        targetX: tank.x,
-        targetY: tank.y,
-        targetAngle: tank.angle,
-        targetSpeed: tank.speed,
-        lastUpdateTime: performance.now(),
-        updateInterval: 50, // 1000/20Hz
-      });
+      if (sessionId === this.localSessionId) {
+        this.predictedTank = {
+          id: tank.id,
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+        };
+        this.lastPredictionTime = performance.now();
+      } else {
+        this.remoteTanks.set(sessionId, {
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+          prevX: tank.x,
+          prevY: tank.y,
+          prevAngle: tank.angle,
+          targetX: tank.x,
+          targetY: tank.y,
+          targetAngle: tank.angle,
+          targetSpeed: tank.speed,
+          lastUpdateTime: performance.now(),
+          updateInterval: 50, // initial guess (1000/20)
+        });
+      }
 
       this.tankAliveState.set(sessionId, tank.alive);
       this.syncTankEffects(tank, sessionId);
 
+      // Per-instance change listener — fires when ANY property on this tank changes
       const tankProxy = getCallbacks(tank);
       tankProxy.onChange(() => {
         // Detect alive -> dead transitions for explosions
@@ -246,30 +280,81 @@ export class GameEngine {
         this.tankAliveState.set(sessionId, tank.alive);
         this.syncTankEffects(tank, sessionId);
 
-        const interp = this.tanks.get(sessionId);
-        if (interp) {
-          const now = performance.now();
-          const elapsed = now - interp.lastUpdateTime;
-          // Adaptive update interval (EMA)
-          if (elapsed > 0 && elapsed < 200) {
-            interp.updateInterval = interp.updateInterval * 0.7 + elapsed * 0.3;
+        if (sessionId === this.localSessionId) {
+          // === Visual offset correction ===
+          // Snap simulation to server authority. Absorb the visual
+          // difference into a render-only offset that decays per-frame.
+          // This keeps prediction clean (never corrupted by blending)
+          // while making corrections imperceptible to the player.
+          const serverState: TankState = {
+            id: tank.id,
+            x: tank.x,
+            y: tank.y,
+            angle: tank.angle,
+            speed: tank.speed,
+          };
+
+          if (!tank.alive || this.currentPhase !== 'playing') {
+            // Not playing — accept server state directly, no offset
+            this.predictedTank = serverState;
+            this.displayOffsetX = 0;
+            this.displayOffsetY = 0;
+            this.displayOffsetAngle = 0;
+            return;
           }
-          // Shift previous target to prev
-          interp.prevX = interp.targetX;
-          interp.prevY = interp.targetY;
-          interp.prevAngle = interp.targetAngle;
-          // Set new target
-          interp.targetX = tank.x;
-          interp.targetY = tank.y;
-          interp.targetAngle = tank.angle;
-          interp.targetSpeed = tank.speed;
-          interp.lastUpdateTime = now;
+
+          if (!this.predictedTank) {
+            this.predictedTank = serverState;
+          } else {
+            // Error = where we think we are minus where server says
+            const errorX = this.predictedTank.x - serverState.x;
+            const errorY = this.predictedTank.y - serverState.y;
+            const errorAngle = shortestAngleDelta(this.predictedTank.angle, serverState.angle);
+            const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
+
+            if (errorDist > SNAP_THRESHOLD_PX || Math.abs(errorAngle) > 30) {
+              // Teleport — too far off, snap everything
+              this.predictedTank = serverState;
+              this.displayOffsetX = 0;
+              this.displayOffsetY = 0;
+              this.displayOffsetAngle = 0;
+            } else {
+              // Absorb error into display offset so rendered position
+              // stays visually at the old spot, then snap sim to server
+              this.displayOffsetX += errorX;
+              this.displayOffsetY += errorY;
+              this.displayOffsetAngle += errorAngle;
+              this.predictedTank = serverState;
+            }
+          }
+        } else {
+          // === Remote tank interpolation update ===
+          const remote = this.remoteTanks.get(sessionId);
+          if (remote) {
+            const now = performance.now();
+            const elapsed = now - remote.lastUpdateTime;
+            // Adaptive update interval (EMA)
+            if (elapsed > 0 && elapsed < 200) {
+              remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+            }
+            // Shift previous target to prev (not render position, which
+            // depends on frame timing and creates variable interpolation)
+            remote.prevX = remote.targetX;
+            remote.prevY = remote.targetY;
+            remote.prevAngle = remote.targetAngle;
+            // Set new target
+            remote.targetX = tank.x;
+            remote.targetY = tank.y;
+            remote.targetAngle = tank.angle;
+            remote.targetSpeed = tank.speed;
+            remote.lastUpdateTime = now;
+          }
         }
       });
     });
 
     $.tanks.onRemove((_tank, sessionId) => {
-      this.tanks.delete(sessionId);
+      this.remoteTanks.delete(sessionId);
       this.tankAliveState.delete(sessionId);
       this.tankEffects.delete(sessionId);
     });
@@ -415,6 +500,14 @@ export class GameEngine {
   // Helpers
   // -------------------------------------------------------------------------
 
+  /** Run the same 4-step physics pipeline the server uses for a single tick. */
+  private stepTankPhysics(prev: TankState, input: InputState, dt: number): TankState {
+    const moved = updateTank(prev, { ...input, fire: false }, dt);
+    const clamped = clampTankToMaze(moved, MAZE_WIDTH, MAZE_HEIGHT);
+    const { tank: wallCorrected } = collideTankWithWalls(clamped, prev, this.mazeSegments);
+    return collideTankWithEndpoints(wallCorrected, this.wallEndpoints);
+  }
+
   private syncTankEffects(tank: { effects: Iterable<{ type: string; remainingTime: number; remainingAmmo: number }> }, sessionId: string): void {
     const effects: ActiveEffectData[] = [];
     for (const e of tank.effects) {
@@ -430,41 +523,26 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Interpolate all tanks (local and remote — same logic)
+  // Prediction (local-only, no input replay)
   // -------------------------------------------------------------------------
 
-  private interpolateTanks(): void {
-    const now = performance.now();
-    this.tanks.forEach((interp) => {
-      const elapsed = now - interp.lastUpdateTime;
-      const t = Math.min(elapsed / interp.updateInterval, 2.0);
-      const tClamped = Math.min(t, 1.0);
+  private runPrediction(dt: number): void {
+    if (!this.predictedTank || this.mazeSegments.length === 0) return;
+    // Don't predict tank during non-playing phases (countdown, waiting, etc.)
+    // to avoid accumulating drift that causes flicker on phase transition
+    const skipTankPrediction = this.currentPhase !== 'playing';
 
-      // Lerp from prev to target
-      interp.x = interp.prevX + (interp.targetX - interp.prevX) * tClamped;
-      interp.y = interp.prevY + (interp.targetY - interp.prevY) * tClamped;
+    const currentInput = this.inputHandler.getKeys();
 
-      // Shortest-path angle interpolation
-      const angleDelta = shortestAngleDelta(interp.targetAngle, interp.prevAngle);
-      interp.angle = interp.prevAngle + angleDelta * tClamped;
+    // Advance tank physics using the PREVIOUS tick's input.
+    // This 1-tick delay (~16.67ms, imperceptible) matches the server's
+    // behavior where input arrives between ticks and applies on the next one,
+    // eliminating the systematic 2.13px prediction error on input changes.
+    if (!skipTankPrediction) {
+      this.predictedTank = this.stepTankPhysics(this.predictedTank, this.delayedInput, dt);
+    }
+    this.delayedInput = currentInput;
 
-      interp.speed = interp.targetSpeed;
-
-      // Dead-reckon beyond target if moving
-      if (t > 1.0 && interp.speed !== 0) {
-        const extraTime = (elapsed - interp.updateInterval) / 1000;
-        const rad = degreesToRadians(interp.angle);
-        interp.x += Math.cos(rad) * interp.speed * extraTime;
-        interp.y += Math.sin(rad) * interp.speed * extraTime;
-      }
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // Advance projectiles between server events
-  // -------------------------------------------------------------------------
-
-  private advanceProjectiles(dt: number): void {
     // Advance bullets with wall bounce
     const bulletToRemove: string[] = [];
     for (const [id, bullet] of this.activeBullets) {
@@ -481,15 +559,18 @@ export class GameEngine {
 
     // Advance missiles with homing + wall bounce
     const missileTankSnapshots: TankState[] = [];
-    this.tanks.forEach((interp, sessionId) => {
+    if (this.predictedTank) {
+      missileTankSnapshots.push(this.predictedTank);
+    }
+    this.remoteTanks.forEach((remote, sessionId) => {
       const alive = this.tankAliveState.get(sessionId);
       if (alive) {
         missileTankSnapshots.push({
           id: sessionId,
-          x: interp.x,
-          y: interp.y,
-          angle: interp.angle,
-          speed: interp.speed,
+          x: remote.x,
+          y: remote.y,
+          angle: remote.angle,
+          speed: remote.speed,
         });
       }
     });
@@ -541,6 +622,58 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Interpolate remote tanks
+  // -------------------------------------------------------------------------
+
+  private interpolateRemoteTanks(): void {
+    const now = performance.now();
+    this.remoteTanks.forEach((remote) => {
+      const elapsed = now - remote.lastUpdateTime;
+      const t = Math.min(elapsed / remote.updateInterval, 2.0);
+      const tClamped = Math.min(t, 1.0);
+
+      // Lerp from prev to target
+      remote.x = remote.prevX + (remote.targetX - remote.prevX) * tClamped;
+      remote.y = remote.prevY + (remote.targetY - remote.prevY) * tClamped;
+
+      // Use shortestAngleDelta for angle interpolation
+      const angleDelta = shortestAngleDelta(remote.targetAngle, remote.prevAngle);
+      remote.angle = remote.prevAngle + angleDelta * tClamped;
+
+      remote.speed = remote.targetSpeed;
+
+      // Dead-reckon beyond target if moving
+      if (t > 1.0 && remote.speed !== 0) {
+        const extraTime = (elapsed - remote.updateInterval) / 1000;
+        const rad = degreesToRadians(remote.angle);
+        remote.x += Math.cos(rad) * remote.speed * extraTime;
+        remote.y += Math.sin(rad) * remote.speed * extraTime;
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-frame display offset decay (render-only, never touches simulation)
+  // -------------------------------------------------------------------------
+
+  private decayDisplayOffset(frameDt: number): void {
+    // Rate ~0.5 → corrections converge in ~2s. Sweet spot between
+    // visual smoothness and positional accuracy.
+    const CORRECTION_RATE = 0.5;
+    const keep = Math.exp(-CORRECTION_RATE * frameDt);
+
+    this.displayOffsetX *= keep;
+    this.displayOffsetY *= keep;
+    // Snap angle immediately — angle offsets cause the most visible wobble
+    // since they change movement direction, so don't smooth them
+    this.displayOffsetAngle = 0;
+
+    // Snap to zero when negligible (0.5px threshold to cut off slide sooner)
+    if (Math.abs(this.displayOffsetX) < 0.5) this.displayOffsetX = 0;
+    if (Math.abs(this.displayOffsetY) < 0.5) this.displayOffsetY = 0;
+  }
+
+  // -------------------------------------------------------------------------
   // Render loop
   // -------------------------------------------------------------------------
 
@@ -562,23 +695,26 @@ export class GameEngine {
 
     const now = Date.now();
 
-    // Fixed timestep accumulator for projectile advancement
+    // Fixed timestep accumulator for local prediction
     const perfNow = performance.now();
-    if (this.lastFrameTime === 0) {
-      this.lastFrameTime = perfNow;
+    if (this.lastPredictionTime === 0) {
+      this.lastPredictionTime = perfNow;
     }
-    let frameDt = (perfNow - this.lastFrameTime) / 1000;
-    this.lastFrameTime = perfNow;
+    let frameDt = (perfNow - this.lastPredictionTime) / 1000;
+    this.lastPredictionTime = perfNow;
     frameDt = Math.min(frameDt, MAX_PHYSICS_STEPS_PER_FRAME * PHYSICS_STEP);
     this.physicsAccumulator += frameDt;
 
     while (this.physicsAccumulator >= PHYSICS_STEP) {
-      this.advanceProjectiles(PHYSICS_STEP);
+      this.runPrediction(PHYSICS_STEP);
       this.physicsAccumulator -= PHYSICS_STEP;
     }
 
-    // Interpolate all tanks (local and remote)
-    this.interpolateTanks();
+    // Decay visual offset every frame (render-only correction)
+    this.decayDisplayOffset(frameDt);
+
+    // Interpolate remote tanks
+    this.interpolateRemoteTanks();
 
     // Draw powerups
     for (const powerup of this.currentPowerups) {
@@ -588,12 +724,29 @@ export class GameEngine {
     // Draw tanks
     const tankColors = ['#4ade80', '#f87171'];
 
-    this.tanks.forEach((interp, sessionId) => {
+    // Draw local tank at simulation position + visual offset
+    if (this.predictedTank) {
+      const localAlive = this.tankAliveState.get(this.localSessionId);
+      if (localAlive) {
+        const localOrderIdx = this.tankSessionOrder.indexOf(this.localSessionId);
+        const localColor = tankColors[localOrderIdx >= 0 ? localOrderIdx % 2 : 0];
+        const renderState: TankState = {
+          ...this.predictedTank,
+          x: this.predictedTank.x + this.displayOffsetX,
+          y: this.predictedTank.y + this.displayOffsetY,
+          angle: this.predictedTank.angle + this.displayOffsetAngle,
+        };
+        drawTank(this.ctx, renderState, localColor);
+      }
+    }
+
+    // Draw remote tanks
+    this.remoteTanks.forEach((remote, sessionId) => {
       const alive = this.tankAliveState.get(sessionId);
       if (!alive) return;
       const orderIdx = this.tankSessionOrder.indexOf(sessionId);
-      const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
-      const ts: TankState = { id: sessionId, x: interp.x, y: interp.y, angle: interp.angle, speed: interp.speed };
+      const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 1];
+      const ts: TankState = { id: sessionId, x: remote.x, y: remote.y, angle: remote.angle, speed: remote.speed };
       drawTank(this.ctx, ts, color);
     });
 
