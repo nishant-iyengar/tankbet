@@ -1,6 +1,6 @@
 import { Room } from '@colyseus/core';
 import type { Client } from '@colyseus/core';
-import { TankRoomState, Tank, Bullet, Powerup, Missile, ActiveEffect } from './TankRoomState';
+import { TankRoomState, Tank, Powerup, Missile, ActiveEffect } from './TankRoomState';
 import {
   SERVER_TICK_HZ,
   MAZE_COLS,
@@ -56,7 +56,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected bulletIdCounter = 0;
   protected missileIdCounter = 0;
   protected powerupIdCounter = 0;
-  protected bulletAges = new Map<string, number>();
+  protected bullets: BulletState[] = [];
   protected missileTargets = new Map<string, string>();
   protected powerupSpawnTimer = 0;
   protected nextPowerupSpawnIn = 10;
@@ -114,6 +114,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.state.lives.set(client.sessionId, LIVES_PER_GAME);
 
     client.send('maze', { segments: this.wallSegments });
+    client.send('bullet:sync', this.bullets);
   }
 
   protected startGameLoop(): void {
@@ -129,10 +130,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
 
     // Clear all projectiles and their tracking data
-    this.state.bullets.splice(0, this.state.bullets.length);
+    this.bullets = [];
+    this.broadcast('bullet:clear');
     this.state.missiles.splice(0, this.state.missiles.length);
     this.state.powerups.splice(0, this.state.powerups.length);
-    this.bulletAges.clear();
     this.missileTargets.clear();
     this.lastFiredAt.clear();
 
@@ -179,7 +180,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       // Handle firing — weapon powerup takes priority over normal bullets
       const now = Date.now();
       const lastFired = this.lastFiredAt.get(sessionId) ?? 0;
-      const bulletCount = this.state.bullets.filter((b) => b.ownerId === tank.id).length;
+      const bulletCount = this.bullets.filter((b) => b.ownerId === tank.id).length;
       // canFireBullet checks both cooldown and max bullet count
       const canFire = canFireBullet(now, lastFired, bulletCount);
 
@@ -232,15 +233,15 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         this.lastFiredAt.set(sessionId, now);
         this.bulletIdCounter++;
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState);
-        const bullet = new Bullet();
-        bullet.id = bulletState.id;
-        bullet.ownerId = bulletState.ownerId;
-        bullet.x = bulletState.x;
-        bullet.y = bulletState.y;
-        bullet.vx = bulletState.vx;
-        bullet.vy = bulletState.vy;
-        this.bulletAges.set(bullet.id, 0);
-        this.state.bullets.push(bullet);
+        this.bullets.push(bulletState);
+        this.broadcast('bullet:fire', {
+          id: bulletState.id,
+          ownerId: bulletState.ownerId,
+          x: bulletState.x,
+          y: bulletState.y,
+          vx: bulletState.vx,
+          vy: bulletState.vy,
+        });
       }
 
       const effects: ActiveEffectData[] = [];
@@ -265,24 +266,18 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.angle = shielded.angle;
     });
 
-    // 2. Advance bullets
+    // 2. Advance bullets (plain array, synced via events)
     const bulletsToRemove: number[] = [];
-    for (let i = 0; i < this.state.bullets.length; i++) {
-      const bullet = this.state.bullets[i];
+    for (let i = 0; i < this.bullets.length; i++) {
+      const bullet = this.bullets[i];
       if (!bullet) continue;
-      const bulletState: BulletState = {
-        id: bullet.id,
-        ownerId: bullet.ownerId,
-        x: bullet.x,
-        y: bullet.y,
-        vx: bullet.vx,
-        vy: bullet.vy,
-        age: this.bulletAges.get(bullet.id) ?? 0,
-      };
 
-      const advanced = advanceBullet(bulletState, dt, this.wallSegments);
+      const prevVx = bullet.vx;
+      const prevVy = bullet.vy;
+      const advanced = advanceBullet(bullet, dt, this.wallSegments);
       if (!advanced) {
         bulletsToRemove.push(i);
+        this.broadcast('bullet:remove', { id: bullet.id });
         continue;
       }
 
@@ -293,24 +288,29 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         if (checkBulletTankCollision(advanced, ts)) {
           hitTank = true;
           bulletsToRemove.push(i);
+          this.broadcast('bullet:remove', { id: bullet.id });
           this.onBulletHitTank(sessionId);
         }
       });
 
       if (!hitTank) {
-        bullet.x = advanced.x;
-        bullet.y = advanced.y;
-        bullet.vx = advanced.vx;
-        bullet.vy = advanced.vy;
-        this.bulletAges.set(bullet.id, advanced.age);
+        // Detect bounce: velocity direction changed
+        if (advanced.vx !== prevVx || advanced.vy !== prevVy) {
+          this.broadcast('bullet:bounce', {
+            id: advanced.id,
+            x: advanced.x,
+            y: advanced.y,
+            vx: advanced.vx,
+            vy: advanced.vy,
+          });
+        }
+        this.bullets[i] = advanced;
       }
     }
 
     const uniqueBulletRemove = [...new Set(bulletsToRemove)].sort((a, b) => b - a);
     for (const idx of uniqueBulletRemove) {
-      const b = this.state.bullets[idx];
-      if (b) this.bulletAges.delete(b.id);
-      this.state.bullets.splice(idx, 1);
+      this.bullets.splice(idx, 1);
     }
 
     // 3. Advance missiles

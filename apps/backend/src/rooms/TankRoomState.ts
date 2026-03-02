@@ -2,7 +2,6 @@
 // This ensures the server and client use the SAME schema definitions.
 export {
   ActiveEffect,
-  Bullet,
   Powerup,
   Missile,
   Tank,

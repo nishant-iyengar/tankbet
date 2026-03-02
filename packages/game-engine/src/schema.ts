@@ -12,23 +12,6 @@ export interface ActiveEffect {
   remainingAmmo: number;
 }
 
-export const Bullet = schema({
-  id:      { type: 'string',  default: '' },
-  ownerId: { type: 'string',  default: '' },
-  x:       { type: 'float32', default: 0 },
-  y:       { type: 'float32', default: 0 },
-  vx:      { type: 'float32', default: 0 },
-  vy:      { type: 'float32', default: 0 },
-}, 'Bullet');
-export interface Bullet {
-  id: string;
-  ownerId: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-}
-
 export const Powerup = schema({
   id:   { type: 'string',  default: '' },
   type: { type: 'string',  default: '' }, // PowerupType value
@@ -82,7 +65,6 @@ export type GamePhase = 'waiting' | 'countdown' | 'playing' | 'resolving' | 'end
 
 export const TankRoomState = schema({
   tanks:         { map: Tank },
-  bullets:       [Bullet],
   powerups:      [Powerup],
   missiles:      [Missile],
   countdown:     { type: 'int8',   default: GAME_START_COUNTDOWN_SECONDS },
@@ -93,7 +75,6 @@ export const TankRoomState = schema({
 }, 'TankRoomState');
 export interface TankRoomState {
   tanks:         MapSchema<Tank>;
-  bullets:       ArraySchema<Bullet>;
   powerups:      ArraySchema<Powerup>;
   missiles:      ArraySchema<Missile>;
   countdown:     number;
