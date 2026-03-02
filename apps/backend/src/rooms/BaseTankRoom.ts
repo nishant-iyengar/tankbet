@@ -52,6 +52,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected mazeWidth = 0;
   protected mazeHeight = 0;
   protected pendingInputs = new Map<string, InputState>();
+  // Buffered fire flag: true if fire was pressed at any point since the last tick.
+  // Prevents quick press+release between ticks from being lost.
+  protected pendingFire = new Map<string, boolean>();
   protected playerCount = 0;
   protected bulletIdCounter = 0;
   protected missileIdCounter = 0;
@@ -93,6 +96,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, message.keys);
+      // Buffer fire presses so quick taps between ticks aren't lost
+      if (message.keys.fire) {
+        this.pendingFire.set(client.sessionId, true);
+      }
     });
   }
 
@@ -184,8 +191,13 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.state.tanks.forEach((tank, sessionId) => {
       if (!tank.alive) return;
 
-      const input = this.pendingInputs.get(sessionId);
-      if (!input) return;
+      const rawInput = this.pendingInputs.get(sessionId);
+      if (!rawInput) return;
+
+      // Use buffered fire flag so quick taps between ticks aren't missed
+      const fireBuffered = this.pendingFire.get(sessionId) ?? false;
+      const input: InputState = { ...rawInput, fire: rawInput.fire || fireBuffered };
+      this.pendingFire.delete(sessionId);
 
       const tankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
 

@@ -57,8 +57,8 @@ export const POWERUP_COLLECTION_RADIUS = 22; // px — proximity to auto-collect
 // Targeting missile
 export const MISSILE_SPEED = 160;                // px/s (~21% faster than original 132)
 export const MISSILE_RADIUS = 3;                 // px — collision radius
-export const MISSILE_HOMING_DELAY_S = 2;         // seconds before switching to closest-tank homing
-export const MISSILE_TURN_SPEED_DEG = 90;        // deg/s — sluggish homing turn rate (intentionally dumb)
+export const MISSILE_HOMING_DELAY_S = 1;         // seconds before switching to closest-tank homing
+export const MISSILE_TURN_SPEED_DEG = 150;       // deg/s — homing turn rate
 export const MISSILE_WALL_AVOID_RADIUS = 50;     // px — start dodging walls within this distance
 export const MISSILE_WALL_AVOID_STRENGTH = 5;    // avoidance force weight relative to homing force
 export const MISSILE_WALL_AVOID_TURN_DEG = 300;  // deg/s — fast turn budget used only for wall avoidance

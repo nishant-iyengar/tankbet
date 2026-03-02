@@ -473,10 +473,22 @@ export function updateMissile(
     }
   }
 
-  // --- Homing vector (normalized, zero if no target) ---
+  // --- Line-of-sight check: only home when no wall blocks the path to the target ---
+  let hasLineOfSight = true;
+  if (targetTank) {
+    for (const wall of walls) {
+      const { crossed } = bulletCrossesWall(missile.x, missile.y, targetTank.x, targetTank.y, wall);
+      if (crossed) {
+        hasLineOfSight = false;
+        break;
+      }
+    }
+  }
+
+  // --- Homing vector (normalized, zero if no target or no line of sight) ---
   let homingX = 0;
   let homingY = 0;
-  if (targetTank) {
+  if (targetTank && hasLineOfSight) {
     const dx = targetTank.x - missile.x;
     const dy = targetTank.y - missile.y;
     const dist = Math.sqrt(dx * dx + dy * dy);

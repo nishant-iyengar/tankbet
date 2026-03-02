@@ -126,12 +126,15 @@ export interface SeatReservation {
 }
 
 const SNAP_THRESHOLD = 50; // px — teleport to server if prediction drifts further
-const RECONCILE_LERP_PER_FRAME = 0.1; // blend factor per render frame toward server target
+const RECONCILE_LERP_PER_FRAME = 0.25; // blend factor per render frame toward server target
 const RECONCILE_DONE_THRESHOLD = 0.5; // px — stop blending when error is below this
 const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
 const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
 // Unconfirmed predicted bullets are discarded after this age (server rejected or lost)
 const UNCONFIRMED_BULLET_MAX_AGE_S = 0.5;
+// Fixed timestep for deterministic physics independent of frame rate
+const PHYSICS_STEP = 1 / 60;
+const MAX_PHYSICS_STEPS_PER_FRAME = 6; // cap to prevent spiral of death
 
 export class GameEngine {
   private client: Client | null = null;
@@ -157,6 +160,7 @@ export class GameEngine {
   private predictedTank: TankState | null = null;
   private wallEndpoints: Vec2[] = [];
   private lastPredictionTime = 0;
+  private physicsAccumulator = 0;
 
   // Smooth tank reconciliation: store server target and blend per-frame
   private serverTankTarget: { x: number; y: number; angle: number } | null = null;
@@ -379,10 +383,17 @@ export class GameEngine {
         }
       }
 
-      this.stateBuffer.push({ timestamp: Date.now(), state: snapshot });
+      const now = Date.now();
+      this.stateBuffer.push({ timestamp: now, state: snapshot });
 
-      if (this.stateBuffer.length > 60) {
-        this.stateBuffer = this.stateBuffer.slice(-30);
+      // Trim snapshots older than 3x interpolation delay (rolling window, no sharp cutoff)
+      const cutoff = now - INTERPOLATION_DELAY_MS * 3;
+      let trimCount = 0;
+      while (trimCount < this.stateBuffer.length - 2 && this.stateBuffer[trimCount].timestamp < cutoff) {
+        trimCount++;
+      }
+      if (trimCount > 0) {
+        this.stateBuffer.splice(0, trimCount);
       }
 
       if (this.onPhaseChange) {
@@ -660,17 +671,21 @@ export class GameEngine {
     const state = this.getInterpolatedState();
     if (!state) return;
 
-    // Run client-side prediction for local tank and bullets
+    // Run client-side prediction with fixed timestep for deterministic physics
     const perfNow = performance.now();
     if (this.lastPredictionTime === 0) {
       this.lastPredictionTime = perfNow;
     }
-    const dt = (perfNow - this.lastPredictionTime) / 1000;
+    let frameDt = (perfNow - this.lastPredictionTime) / 1000;
     this.lastPredictionTime = perfNow;
-    if (dt > 0 && dt <= 0.1) {
-      const localTank = state.tanks.get(this.localSessionId);
-      const localEffects = localTank?.effects ?? [];
-      this.runPrediction(dt, localEffects);
+    frameDt = Math.min(frameDt, MAX_PHYSICS_STEPS_PER_FRAME * PHYSICS_STEP);
+    this.physicsAccumulator += frameDt;
+
+    const localTank = state.tanks.get(this.localSessionId);
+    const localEffects = localTank?.effects ?? [];
+    while (this.physicsAccumulator >= PHYSICS_STEP) {
+      this.runPrediction(PHYSICS_STEP, localEffects);
+      this.physicsAccumulator -= PHYSICS_STEP;
     }
 
     for (const powerup of state.powerups) {
