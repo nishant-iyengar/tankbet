@@ -91,7 +91,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       POWERUP_SPAWN_INTERVAL_MIN_S +
       Math.random() * (POWERUP_SPAWN_INTERVAL_MAX_S - POWERUP_SPAWN_INTERVAL_MIN_S);
 
-    this.patchRate = 1000 / SERVER_PATCH_HZ;
+    // Disable automatic patching — we call broadcastPatch() manually at the
+    // end of each tick to guarantee exactly 1 patch per simulation step.
+    // When patchRate === simulationInterval, Node.js timer drift causes
+    // two ticks to sometimes fire before one patch, doubling the error.
+    this.patchRate = null;
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, { keys: message.keys });
@@ -469,6 +473,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         POWERUP_SPAWN_INTERVAL_MIN_S +
         Math.random() * (POWERUP_SPAWN_INTERVAL_MAX_S - POWERUP_SPAWN_INTERVAL_MIN_S);
     }
+
+    // Send state patch immediately after each tick — guarantees exactly
+    // 1 patch per simulation step with no timer drift.
+    this.broadcastPatch();
   }
 
   protected spawnPowerup(): void {

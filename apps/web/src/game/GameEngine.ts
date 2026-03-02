@@ -312,6 +312,11 @@ export class GameEngine {
             const errorAngle = shortestAngleDelta(this.predictedTank.angle, serverState.angle);
             const errorDist = Math.sqrt(errorX * errorX + errorY * errorY);
 
+            // DEBUG: log errors to diagnose remaining jitter at 60Hz patches
+            if (errorDist > 0.5 || Math.abs(errorAngle) > 0.5) {
+              console.log(`[correction] dist=${errorDist.toFixed(2)} angle=${errorAngle.toFixed(2)} offset=(${this.displayOffsetX.toFixed(1)},${this.displayOffsetY.toFixed(1)},${this.displayOffsetAngle.toFixed(1)})`);
+            }
+
             if (errorDist > SNAP_THRESHOLD_PX || Math.abs(errorAngle) > 30) {
               // Teleport — too far off, snap everything
               this.predictedTank = serverState;
@@ -657,8 +662,8 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~2 → corrections converge in ~500ms.
-    const CORRECTION_RATE = 2;
+    // Rate ~0.5 → corrections converge in ~2s.
+    const CORRECTION_RATE = 0.5;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;
