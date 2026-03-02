@@ -186,7 +186,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
   protected abstract onBulletHitTank(killedSessionId: string): void;
 
-  private tick(dt: number): void {
+  private tick(_dt: number): void {
+    // Use fixed timestep to match client prediction exactly (Gambetta reconciliation
+    // requires identical physics on both sides). The variable dt from setSimulationInterval
+    // causes drift that appears as micro-stutters during reconciliation.
+    const dt = 1 / SERVER_TICK_HZ;
     if (this.state.phase !== 'playing') return;
 
     this.state.serverTick++;

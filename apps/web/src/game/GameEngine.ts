@@ -24,6 +24,7 @@ import {
   PHYSICS_STEP,
   MISSILE_RADIUS,
   MISSILE_LIFETIME_SECONDS,
+  SNAP_THRESHOLD_PX,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -314,9 +315,30 @@ export class GameEngine {
             replayState = this.stepTankPhysics(replayState, rec.keys, rec.dt);
           }
 
-          // Accept the replay result — this naturally corrects drift since
-          // the replay started from the authoritative server position.
-          this.predictedTank = replayState;
+          // Smooth reconciliation: blend toward replay result to avoid micro-stutters.
+          // With matched fixed timesteps the error should be near-zero, but floating
+          // point and wall collision differences can still cause tiny discrepancies.
+          const predicted = this.predictedTank;
+          if (!predicted) {
+            this.predictedTank = replayState;
+          } else {
+            const dx = replayState.x - predicted.x;
+            const dy = replayState.y - predicted.y;
+            const errorSq = dx * dx + dy * dy;
+
+            if (errorSq > SNAP_THRESHOLD_PX * SNAP_THRESHOLD_PX) {
+              // Large error — snap immediately
+              this.predictedTank = replayState;
+            } else if (errorSq > 0.25) {
+              // Small error — blend toward reconciled position
+              this.predictedTank = {
+                ...replayState,
+                x: predicted.x + dx * 0.3,
+                y: predicted.y + dy * 0.3,
+              };
+            }
+            // else: negligible error (<0.5px), keep current prediction
+          }
         } else {
           // === Remote tank interpolation update ===
           const remote = this.remoteTanks.get(sessionId);
