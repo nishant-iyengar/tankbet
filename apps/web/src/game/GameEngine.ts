@@ -155,6 +155,12 @@ export class GameEngine {
   private displayOffsetY = 0;
   private displayOffsetAngle = 0;
 
+  // Input redundancy: periodic resend to recover from dropped messages
+  private inputResendInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Smooth angle correction: blend toward server angle instead of snapping
+  private serverTargetAngle: number | null = null;
+
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
 
@@ -293,6 +299,7 @@ export class GameEngine {
           if (!tank.alive || this.currentPhase !== 'playing') {
             // Not playing — accept server state directly, no offset
             this.predictedTank = serverState;
+            this.serverTargetAngle = null;
             this.displayOffsetX = 0;
             this.displayOffsetY = 0;
             this.displayOffsetAngle = 0;
@@ -311,16 +318,23 @@ export class GameEngine {
             if (errorDist > SNAP_THRESHOLD_PX || Math.abs(errorAngle) > 30) {
               // Teleport — too far off, snap everything
               this.predictedTank = serverState;
+              this.serverTargetAngle = null;
               this.displayOffsetX = 0;
               this.displayOffsetY = 0;
               this.displayOffsetAngle = 0;
             } else {
-              // Absorb error into display offset so rendered position
-              // stays visually at the old spot, then snap sim to server
+              // Absorb position error into display offset so rendered position
+              // stays visually at the old spot, then snap sim position to server.
+              // For angle, blend toward server value per-frame instead of snapping
+              // to avoid prediction trajectory direction jumps (micro-stutters).
               this.displayOffsetX += errorX;
               this.displayOffsetY += errorY;
               this.displayOffsetAngle += errorAngle;
-              this.predictedTank = serverState;
+              this.predictedTank = {
+                ...serverState,
+                angle: this.predictedTank.angle, // keep predicted angle
+              };
+              this.serverTargetAngle = serverState.angle;
             }
           }
         } else {
@@ -486,6 +500,12 @@ export class GameEngine {
       this.room?.send('input', { keys });
     });
 
+    // Periodically resend current input state at 10Hz so a single dropped
+    // WebSocket message doesn't leave the server stuck with stale input
+    this.inputResendInterval = setInterval(() => {
+      this.room?.send('input', { keys: this.inputHandler.getKeys() });
+    }, 100);
+
     this.startRenderLoop();
   }
 
@@ -646,8 +666,8 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~4 → corrections converge in ~300ms (smoother, sacrifices snappiness)
-    const CORRECTION_RATE = 4;
+    // Rate ~8 → corrections converge in ~150ms (snappier, less wobble time)
+    const CORRECTION_RATE = 8;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;
@@ -658,6 +678,23 @@ export class GameEngine {
     if (Math.abs(this.displayOffsetX) < 0.1) this.displayOffsetX = 0;
     if (Math.abs(this.displayOffsetY) < 0.1) this.displayOffsetY = 0;
     if (Math.abs(this.displayOffsetAngle) < 0.05) this.displayOffsetAngle = 0;
+
+    // Blend predicted angle toward server target angle per-frame.
+    // This avoids direction jumps from snapping angle at correction time.
+    if (this.serverTargetAngle !== null && this.predictedTank) {
+      const ANGLE_BLEND_RATE = 5;
+      const delta = shortestAngleDelta(this.serverTargetAngle, this.predictedTank.angle);
+      if (Math.abs(delta) < 0.1) {
+        this.predictedTank = { ...this.predictedTank, angle: this.serverTargetAngle };
+        this.serverTargetAngle = null;
+      } else {
+        const blendFactor = 1 - Math.exp(-ANGLE_BLEND_RATE * frameDt);
+        this.predictedTank = {
+          ...this.predictedTank,
+          angle: this.predictedTank.angle + delta * blendFactor,
+        };
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -795,6 +832,10 @@ export class GameEngine {
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
+    }
+    if (this.inputResendInterval !== null) {
+      clearInterval(this.inputResendInterval);
+      this.inputResendInterval = null;
     }
     this.inputHandler.detach();
     void this.room?.leave();
