@@ -460,9 +460,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       this.state.powerups.splice(idx, 1);
     }
 
-    // 5. Powerup spawn timer
+    // 5. Powerup spawn timer (disabled — missiles need work)
+    // TODO: re-enable when missile mechanics are ready
     this.powerupSpawnTimer += dt;
     if (
+      false && // disabled
       this.powerupSpawnTimer >= this.nextPowerupSpawnIn &&
       this.state.powerups.length < POWERUP_MAX_ON_FIELD
     ) {
