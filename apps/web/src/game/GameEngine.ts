@@ -1,15 +1,18 @@
-import type { Client, Room } from '@colyseus/sdk';
+import type { Room } from '@colyseus/sdk';
+import { getStateCallbacks } from '@colyseus/sdk';
+import type { Client } from '@colyseus/sdk';
 import type { InputState, TankState, BulletState, MissileState, Vec2 } from '@tankbet/game-engine/physics';
 import {
   shortestAngleDelta,
+  degreesToRadians,
   updateTank,
   clampTankToMaze,
   collideTankWithWalls,
   collideTankWithEndpoints,
   extractWallEndpoints,
+  advanceBullet,
   canFireBullet,
   createBullet,
-  advanceBullet,
   updateMissile,
   bulletCrossesWall,
   reflectBulletAtWall,
@@ -20,10 +23,10 @@ import {
   MAZE_COLS,
   MAZE_ROWS,
   CELL_SIZE,
-  INTERPOLATION_DELAY_MS,
-  PowerupType,
-  MISSILE_LIFETIME_SECONDS,
+  PHYSICS_STEP,
   MISSILE_RADIUS,
+  MISSILE_LIFETIME_SECONDS,
+  PowerupType,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -37,41 +40,39 @@ import {
   drawExplosion,
   EXPLOSION_DURATION_MS,
 } from '@tankbet/game-engine/renderer';
-import { TankRoomState } from '@tankbet/game-engine/schema';
+import type { TankRoomState } from '@tankbet/game-engine/schema';
 import { InputHandler } from './InputHandler';
 
-interface ClientTankState {
-  id: string;
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
+
+interface InputRecord {
+  seq: number;
+  keys: InputState;
+  dt: number;
+  predictedX: number;
+  predictedY: number;
+  predictedAngle: number;
+}
+
+interface RemoteTankState {
   x: number;
   y: number;
   angle: number;
   speed: number;
-  alive: boolean;
-  effects: ActiveEffectData[];
+  prevX: number;
+  prevY: number;
+  prevAngle: number;
+  targetX: number;
+  targetY: number;
+  targetAngle: number;
+  targetSpeed: number;
+  lastUpdateTime: number;
+  updateInterval: number;
 }
 
-interface PowerupSnapshot {
-  id: string;
-  type: string;
-  x: number;
-  y: number;
-}
-
-interface SnapshotState {
-  tanks: Map<string, ClientTankState>;
-  powerups: PowerupSnapshot[];
-  countdown: number;
-  phase: string;
-  winnerId: string;
-  roundWinnerId: string;
-  lives: Map<string, number>;
-}
-
-interface SnapshotEntry {
-  timestamp: number;
-  state: SnapshotState;
-}
-
+// Event interfaces for broadcast-based projectile handling
 interface BulletFireEvent {
   id: string;
   ownerId: string;
@@ -124,24 +125,26 @@ export interface SeatReservation {
   publicAddress?: string;
 }
 
-const SNAP_THRESHOLD = 50; // px — teleport to server if prediction drifts further
-const RECONCILE_LERP_PER_FRAME = 0.15; // blend factor per render frame toward server target
-const RECONCILE_DONE_THRESHOLD = 0.5; // px — stop blending when error is below this
+// ---------------------------------------------------------------------------
+// Derived constants
+// ---------------------------------------------------------------------------
+
 const MAZE_WIDTH = MAZE_COLS * CELL_SIZE;
 const MAZE_HEIGHT = MAZE_ROWS * CELL_SIZE;
-// Unconfirmed predicted bullets are discarded after this age (server rejected or lost)
+const MAX_PHYSICS_STEPS_PER_FRAME = 6;
+const INPUT_BUFFER_CAP = 120;
 const UNCONFIRMED_BULLET_MAX_AGE_S = 0.5;
-// Fixed timestep for deterministic physics independent of frame rate
-const PHYSICS_STEP = 1 / 60;
-const MAX_PHYSICS_STEPS_PER_FRAME = 6; // cap to prevent spiral of death
+
+// ---------------------------------------------------------------------------
+// GameEngine
+// ---------------------------------------------------------------------------
 
 export class GameEngine {
   private client: Client | null = null;
-  private room: Room | null = null;
+  private room: Room<TankRoomState> | null = null;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private inputHandler: InputHandler;
-  private stateBuffer: SnapshotEntry[] = [];
   private mazeSegments: LineSegment[] = [];
   private animFrameId: number | null = null;
   private playerIndex: 0 | 1 = 0;
@@ -153,7 +156,6 @@ export class GameEngine {
   private localSessionId = '';
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
-  private prevTankAlive = new Map<string, boolean>();
 
   // Client-side prediction state
   private predictedTank: TankState | null = null;
@@ -161,17 +163,33 @@ export class GameEngine {
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
 
-  // Smooth tank reconciliation: store server target and blend per-frame
-  private serverTankTarget: { x: number; y: number; angle: number } | null = null;
+  // Gambetta reconciliation
+  private inputBuffer: InputRecord[] = [];
 
-  // Event-based bullet sync
+  // Remote tank interpolation
+  private remoteTanks = new Map<string, RemoteTankState>();
+
+  // Projectile state (event-driven)
   private activeBullets = new Map<string, BulletState>();
-  // Event-based missile sync
   private activeMissiles = new Map<string, MissileState>();
-  // Predicted bullets awaiting server confirmation (local player only)
+
+  // Ghost bullet prediction — immediate visual feedback before server confirms
   private pendingLocalBullets = new Map<string, BulletState>();
   private nextLocalBulletSeq = 0;
   private lastFireTime = 0;
+
+  // Game state tracking (replaces parseState/stateBuffer)
+  private currentPhase = 'waiting';
+  private currentCountdown = 0;
+  private currentWinnerId = '';
+  private currentRoundWinnerId = '';
+  private currentLives = new Map<string, number>();
+  private currentPowerups: Array<{ id: string; type: string; x: number; y: number }> = [];
+  private tankAliveState = new Map<string, boolean>();
+  private tankEffects = new Map<string, ActiveEffectData[]>();
+
+  // Track session ID insertion order for color assignment
+  private tankSessionOrder: string[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -201,17 +219,143 @@ export class GameEngine {
     this.betAmountCents = betAmountCents;
     this.isPractice = practice;
 
-    this.room = await this.client.consumeSeatReservation<TankRoomState>(seatReservation);
-    this.localSessionId = this.room.sessionId;
+    const room = await this.client.consumeSeatReservation<TankRoomState>(seatReservation);
+    this.room = room;
+    this.localSessionId = room.sessionId;
 
-    this.room.onMessage('maze', (data: { segments: LineSegment[] }) => {
+    // -----------------------------------------------------------------------
+    // Maze message
+    // -----------------------------------------------------------------------
+    room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
       this.wallEndpoints = extractWallEndpoints(data.segments);
     });
 
+    // -----------------------------------------------------------------------
+    // Schema callback proxy
+    // -----------------------------------------------------------------------
+    const getCallbacks = getStateCallbacks(room);
+    if (!getCallbacks) throw new Error('Failed to get state callbacks');
+    const $ = getCallbacks(room.state);
+
+    // -----------------------------------------------------------------------
+    // Tank schema callbacks
+    // -----------------------------------------------------------------------
+    $.tanks.onAdd((tank, sessionId) => {
+      // Track insertion order for color assignment
+      if (!this.tankSessionOrder.includes(sessionId)) {
+        this.tankSessionOrder.push(sessionId);
+      }
+
+      if (sessionId === this.localSessionId) {
+        this.predictedTank = {
+          id: tank.id,
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+        };
+        this.lastPredictionTime = performance.now();
+      } else {
+        this.remoteTanks.set(sessionId, {
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+          prevX: tank.x,
+          prevY: tank.y,
+          prevAngle: tank.angle,
+          targetX: tank.x,
+          targetY: tank.y,
+          targetAngle: tank.angle,
+          targetSpeed: tank.speed,
+          lastUpdateTime: performance.now(),
+          updateInterval: 50, // initial guess (1000/20)
+        });
+      }
+
+      this.tankAliveState.set(sessionId, tank.alive);
+      this.syncTankEffects(tank, sessionId);
+    });
+
+    $.tanks.onChange((tank, sessionId) => {
+      // Detect alive -> dead transitions for explosions
+      const wasAlive = this.tankAliveState.get(sessionId);
+      if (wasAlive === true && !tank.alive) {
+        this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+      }
+      this.tankAliveState.set(sessionId, tank.alive);
+      this.syncTankEffects(tank, sessionId);
+
+      if (sessionId === this.localSessionId) {
+        // === Gambetta Reconciliation ===
+        if (!tank.alive) {
+          this.predictedTank = {
+            id: tank.id,
+            x: tank.x,
+            y: tank.y,
+            angle: tank.angle,
+            speed: tank.speed,
+          };
+          this.inputBuffer = [];
+          return;
+        }
+
+        // Discard acknowledged inputs
+        const ackSeq = tank.lastAckSeq;
+        this.inputBuffer = this.inputBuffer.filter((rec) => rec.seq > ackSeq);
+
+        // Start from server position and replay unacknowledged inputs
+        let replayState: TankState = {
+          id: tank.id,
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+        };
+
+        for (const rec of this.inputBuffer) {
+          replayState = this.stepTankPhysics(replayState, rec.keys, rec.dt);
+        }
+
+        // Accept the replay result — this naturally corrects drift since
+        // the replay started from the authoritative server position.
+        this.predictedTank = replayState;
+      } else {
+        // === Remote tank interpolation update ===
+        const remote = this.remoteTanks.get(sessionId);
+        if (remote) {
+          const now = performance.now();
+          const elapsed = now - remote.lastUpdateTime;
+          // Adaptive update interval (EMA)
+          if (elapsed > 0 && elapsed < 200) {
+            remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+          }
+          // Shift current render position to prev
+          remote.prevX = remote.x;
+          remote.prevY = remote.y;
+          remote.prevAngle = remote.angle;
+          // Set new target
+          remote.targetX = tank.x;
+          remote.targetY = tank.y;
+          remote.targetAngle = tank.angle;
+          remote.targetSpeed = tank.speed;
+          remote.lastUpdateTime = now;
+        }
+      }
+    });
+
+    $.tanks.onRemove((_tank, sessionId) => {
+      this.remoteTanks.delete(sessionId);
+      this.tankAliveState.delete(sessionId);
+      this.tankEffects.delete(sessionId);
+    });
+
+    // -----------------------------------------------------------------------
     // Bullet event handlers
-    this.room.onMessage('bullet:fire', (data: BulletFireEvent) => {
+    // -----------------------------------------------------------------------
+    room.onMessage('bullet:fire', (data: BulletFireEvent) => {
       const localTankId = this.predictedTank?.id;
       if (localTankId && data.ownerId === localTankId) {
         // Match to closest pending predicted bullet
@@ -227,8 +371,6 @@ export class GameEngine {
           }
         }
         if (bestId !== null) {
-          // Promote predicted bullet: keep its advanced position but swap to
-          // the server-authoritative ID so future bounce/remove events match.
           const predicted = this.activeBullets.get(bestId);
           this.pendingLocalBullets.delete(bestId);
           this.activeBullets.delete(bestId);
@@ -239,11 +381,10 @@ export class GameEngine {
               vx: data.vx,
               vy: data.vy,
             });
-            return; // already tracking this bullet — skip adding at spawn pos
+            return;
           }
         }
       }
-      // Add the server bullet to active set (remote player or no matching prediction)
       this.activeBullets.set(data.id, {
         id: data.id,
         ownerId: data.ownerId,
@@ -255,39 +396,35 @@ export class GameEngine {
       });
     });
 
-    this.room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
+    room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
       const bullet = this.activeBullets.get(data.id);
       if (bullet) {
-        // Only correct velocity — the client already bounced locally so the
-        // position is close enough. Correcting position pulls the bullet back
-        // toward the wall and causes re-bounce loops.
         bullet.vx = data.vx;
         bullet.vy = data.vy;
       }
     });
 
-    this.room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
+    room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
       this.activeBullets.delete(data.id);
-
     });
 
-    this.room.onMessage('bullet:clear', () => {
+    room.onMessage('bullet:clear', () => {
       this.activeBullets.clear();
       this.pendingLocalBullets.clear();
-
     });
 
-    this.room.onMessage('bullet:sync', (bullets: BulletState[]) => {
+    room.onMessage('bullet:sync', (bullets: BulletState[]) => {
       this.activeBullets.clear();
       this.pendingLocalBullets.clear();
-
       for (const b of bullets) {
         this.activeBullets.set(b.id, { ...b });
       }
     });
 
+    // -----------------------------------------------------------------------
     // Missile event handlers
-    this.room.onMessage('missile:fire', (data: MissileFireEvent) => {
+    // -----------------------------------------------------------------------
+    room.onMessage('missile:fire', (data: MissileFireEvent) => {
       this.activeMissiles.set(data.id, {
         id: data.id,
         ownerId: data.ownerId,
@@ -300,112 +437,80 @@ export class GameEngine {
       });
     });
 
-    this.room.onMessage('missile:bounce', (data: MissileBounceEvent) => {
+    room.onMessage('missile:bounce', (data: MissileBounceEvent) => {
       const missile = this.activeMissiles.get(data.id);
       if (missile) {
-        // Only correct velocity — client already bounced locally
         missile.vx = data.vx;
         missile.vy = data.vy;
       }
     });
 
-    this.room.onMessage('missile:remove', (data: MissileRemoveEvent) => {
+    room.onMessage('missile:remove', (data: MissileRemoveEvent) => {
       this.activeMissiles.delete(data.id);
-
     });
 
-    this.room.onMessage('missile:clear', () => {
+    room.onMessage('missile:clear', () => {
       this.activeMissiles.clear();
-
     });
 
-    this.room.onMessage('missile:sync', (missiles: MissileState[]) => {
+    room.onMessage('missile:sync', (missiles: MissileState[]) => {
       this.activeMissiles.clear();
-
       for (const m of missiles) {
         this.activeMissiles.set(m.id, { ...m });
       }
     });
 
-    this.room.onStateChange((state: TankRoomState) => {
-      const snapshot = this.parseState(state);
-
-      // Detect alive → dead transitions and spawn explosions
-      snapshot.tanks.forEach((tank, sessionId) => {
-        const wasAlive = this.prevTankAlive.get(sessionId);
-        if (wasAlive === true && !tank.alive) {
-          this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
-        }
-        this.prevTankAlive.set(sessionId, tank.alive);
-      });
-
-      // Server reconciliation for predicted tank
-      const serverLocalTank = snapshot.tanks.get(this.localSessionId);
-      if (serverLocalTank) {
-        if (!this.predictedTank) {
-          // Initialize prediction from first server snapshot
-          this.predictedTank = {
-            id: serverLocalTank.id,
-            x: serverLocalTank.x,
-            y: serverLocalTank.y,
-            angle: serverLocalTank.angle,
-            speed: serverLocalTank.speed,
-          };
-          this.lastPredictionTime = performance.now();
-        } else if (!serverLocalTank.alive) {
-          // Tank died — snap prediction to server so respawn position is correct
-          this.predictedTank = {
-            id: serverLocalTank.id,
-            x: serverLocalTank.x,
-            y: serverLocalTank.y,
-            angle: serverLocalTank.angle,
-            speed: serverLocalTank.speed,
-          };
-          this.serverTankTarget = null;
-        } else {
-          // Check error distance
-          const dx = serverLocalTank.x - this.predictedTank.x;
-          const dy = serverLocalTank.y - this.predictedTank.y;
-          const errorDist = Math.sqrt(dx * dx + dy * dy);
-
-          if (errorDist > SNAP_THRESHOLD) {
-            // Large desync — teleport immediately
-            this.predictedTank = {
-              ...this.predictedTank,
-              x: serverLocalTank.x,
-              y: serverLocalTank.y,
-              angle: serverLocalTank.angle,
-            };
-            this.serverTankTarget = null;
-          } else {
-            // Store server target for smooth per-frame blending
-            this.serverTankTarget = {
-              x: serverLocalTank.x,
-              y: serverLocalTank.y,
-              angle: serverLocalTank.angle,
-            };
-          }
-        }
-      }
-
-      const now = Date.now();
-      this.stateBuffer.push({ timestamp: now, state: snapshot });
-
-      // Trim snapshots older than 3x interpolation delay (rolling window, no sharp cutoff)
-      const cutoff = now - INTERPOLATION_DELAY_MS * 3;
-      let trimCount = 0;
-      while (trimCount < this.stateBuffer.length - 2 && this.stateBuffer[trimCount].timestamp < cutoff) {
-        trimCount++;
-      }
-      if (trimCount > 0) {
-        this.stateBuffer.splice(0, trimCount);
-      }
-
-      if (this.onPhaseChange) {
-        this.onPhaseChange(snapshot.phase, snapshot.winnerId, snapshot.roundWinnerId);
-      }
+    // -----------------------------------------------------------------------
+    // Powerup callbacks
+    // -----------------------------------------------------------------------
+    $.powerups.onAdd((powerup) => {
+      this.currentPowerups.push({ id: powerup.id, type: powerup.type, x: powerup.x, y: powerup.y });
     });
 
+    $.powerups.onRemove((powerup) => {
+      this.currentPowerups = this.currentPowerups.filter((p) => p.id !== powerup.id);
+    });
+
+    // -----------------------------------------------------------------------
+    // Lives callbacks
+    // -----------------------------------------------------------------------
+    $.lives.onAdd((value, sessionId) => {
+      this.currentLives.set(sessionId, value);
+    });
+
+    $.lives.onChange((value, sessionId) => {
+      this.currentLives.set(sessionId, value);
+    });
+
+    $.lives.onRemove((_value, sessionId) => {
+      this.currentLives.delete(sessionId);
+    });
+
+    // -----------------------------------------------------------------------
+    // Scalar field listeners
+    // -----------------------------------------------------------------------
+    $.listen('phase', (value) => {
+      this.currentPhase = value;
+      this.notifyPhaseChange();
+    });
+
+    $.listen('countdown', (value) => {
+      this.currentCountdown = value;
+    });
+
+    $.listen('winnerId', (value) => {
+      this.currentWinnerId = value;
+      this.notifyPhaseChange();
+    });
+
+    $.listen('roundWinnerId', (value) => {
+      this.currentRoundWinnerId = value;
+      this.notifyPhaseChange();
+    });
+
+    // -----------------------------------------------------------------------
+    // Input handler
+    // -----------------------------------------------------------------------
     this.inputHandler.attach(this.playerIndex, (keys: InputState, seq: number) => {
       this.room?.send('input', { keys, seq });
     });
@@ -413,219 +518,120 @@ export class GameEngine {
     this.startRenderLoop();
   }
 
-  private parseState(state: TankRoomState): SnapshotState {
-    const tanks = new Map<string, ClientTankState>();
-    state.tanks.forEach((t, key) => {
-      const effects: ActiveEffectData[] = [];
-      t.effects.forEach((e) => {
-        effects.push({
-          type: e.type,
-          remainingTime: e.remainingTime,
-          remainingAmmo: e.remainingAmmo,
-        });
-      });
-      tanks.set(key, {
-        id: t.id,
-        x: t.x,
-        y: t.y,
-        angle: t.angle,
-        speed: 0,
-        alive: t.alive,
-        effects,
-      });
-    });
+  // -------------------------------------------------------------------------
+  // Helpers
+  // -------------------------------------------------------------------------
 
-    const powerups: PowerupSnapshot[] = [];
-    state.powerups.forEach((p) => {
-      powerups.push({
-        id: p.id,
-        type: p.type,
-        x: p.x,
-        y: p.y,
-      });
-    });
-
-    const lives = new Map<string, number>();
-    state.lives.forEach((v, k) => {
-      lives.set(k, v);
-    });
-
-    return {
-      tanks,
-      powerups,
-      countdown: state.countdown,
-      phase: state.phase,
-      winnerId: state.winnerId,
-      roundWinnerId: state.roundWinnerId,
-      lives,
-    };
+  /** Run the same 4-step physics pipeline the server uses for a single tick. */
+  private stepTankPhysics(prev: TankState, input: InputState, dt: number): TankState {
+    const moved = updateTank(prev, { ...input, fire: false }, dt);
+    const clamped = clampTankToMaze(moved, MAZE_WIDTH, MAZE_HEIGHT);
+    const { tank: wallCorrected } = collideTankWithWalls(clamped, prev, this.mazeSegments);
+    return collideTankWithEndpoints(wallCorrected, this.wallEndpoints);
   }
 
-  private startRenderLoop(): void {
-    const render = (): void => {
-      this.draw();
-      this.animFrameId = requestAnimationFrame(render);
-    };
-    this.animFrameId = requestAnimationFrame(render);
-  }
-
-  private getInterpolatedState(): SnapshotState | null {
-    if (this.stateBuffer.length === 0) return null;
-
-    const renderTime = Date.now() - INTERPOLATION_DELAY_MS;
-
-    let before: SnapshotEntry | null = null;
-    let after: SnapshotEntry | null = null;
-
-    for (let i = 0; i < this.stateBuffer.length; i++) {
-      if (this.stateBuffer[i].timestamp <= renderTime) {
-        before = this.stateBuffer[i];
-      } else {
-        after = this.stateBuffer[i];
-        break;
-      }
+  private syncTankEffects(tank: { effects: Iterable<{ type: string; remainingTime: number; remainingAmmo: number }> }, sessionId: string): void {
+    const effects: ActiveEffectData[] = [];
+    for (const e of tank.effects) {
+      effects.push({ type: e.type, remainingTime: e.remainingTime, remainingAmmo: e.remainingAmmo });
     }
-
-    // No bracketing snapshots — return latest state.
-    if (!before || !after) {
-      return this.stateBuffer[this.stateBuffer.length - 1].state;
-    }
-
-    const total = after.timestamp - before.timestamp;
-    const elapsed = renderTime - before.timestamp;
-    const t = total > 0 ? Math.min(elapsed / total, 1) : 0;
-
-    const tanks = new Map<string, ClientTankState>();
-    before.state.tanks.forEach((bTank, key) => {
-      const aTank = after.state.tanks.get(key);
-      if (aTank) {
-        tanks.set(key, {
-          id: bTank.id,
-          x: bTank.x + (aTank.x - bTank.x) * t,
-          y: bTank.y + (aTank.y - bTank.y) * t,
-          angle: bTank.angle + shortestAngleDelta(aTank.angle, bTank.angle) * t,
-          speed: aTank.speed,
-          alive: aTank.alive,
-          effects: aTank.effects,
-        });
-      } else {
-        tanks.set(key, bTank);
-      }
-    });
-
-    return {
-      tanks,
-      powerups: after.state.powerups,
-      countdown: after.state.countdown,
-      phase: after.state.phase,
-      winnerId: after.state.winnerId,
-      roundWinnerId: after.state.roundWinnerId,
-      lives: after.state.lives,
-    };
+    this.tankEffects.set(sessionId, effects);
   }
 
-  private runPrediction(dt: number, localEffects: ActiveEffectData[]): void {
+  private notifyPhaseChange(): void {
+    if (this.onPhaseChange) {
+      this.onPhaseChange(this.currentPhase, this.currentWinnerId, this.currentRoundWinnerId);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Prediction (Gambetta: predict locally, store in input buffer)
+  // -------------------------------------------------------------------------
+
+  private runPrediction(dt: number): void {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
 
     const input = this.inputHandler.getKeys();
+    const seq = this.inputHandler.getSeq();
     const prevTank = this.predictedTank;
 
-    // Skip bullet prediction when tank has a missile powerup — server fires a missile instead
+    // Ghost bullet prediction — create local predicted bullet for immediate visual feedback
+    const localEffects = this.tankEffects.get(this.localSessionId) ?? [];
     const hasMissileAmmo = localEffects.some(
       (e) => e.type === PowerupType.TARGETING_MISSILE && e.remainingAmmo > 0,
     );
-
-    if (input.fire && hasMissileAmmo) {
-      console.log('[prediction] skipping bullet — has missile ammo', localEffects);
-    }
-    if (input.fire && !hasMissileAmmo && localEffects.length > 0) {
-      console.log('[prediction] firing bullet despite effects', localEffects);
-    }
-
-    // Fire every tick while fire is held AND cooldown ready (matches server behavior)
-    const now = performance.now();
-    // Count confirmed bullets from activeBullets + unconfirmed pending bullets
-    const localTankId = this.predictedTank.id;
-    let confirmedCount = 0;
-    for (const b of this.activeBullets.values()) {
-      if (b.ownerId === localTankId) confirmedCount++;
-    }
-    const totalBulletCount = confirmedCount + this.pendingLocalBullets.size;
-    if (input.fire && !hasMissileAmmo && canFireBullet(now, this.lastFireTime, totalBulletCount)) {
-      this.lastFireTime = now;
-      const localId = `predicted_${this.nextLocalBulletSeq++}`;
-      const bullet = createBullet(localId, this.predictedTank);
-      this.activeBullets.set(localId, bullet);
-      this.pendingLocalBullets.set(localId, bullet);
-    }
-
-    // Run the same 4-step physics pipeline the server uses
-    const moved = updateTank(prevTank, { ...input, fire: false }, dt);
-    const clamped = clampTankToMaze(moved, MAZE_WIDTH, MAZE_HEIGHT);
-    const { tank: wallCorrected } = collideTankWithWalls(clamped, prevTank, this.mazeSegments);
-    const final = collideTankWithEndpoints(wallCorrected, this.wallEndpoints);
-    this.predictedTank = final;
-
-    // Smooth reconciliation: blend toward server target per frame
-    if (this.serverTankTarget && this.predictedTank) {
-      const dx = this.serverTankTarget.x - this.predictedTank.x;
-      const dy = this.serverTankTarget.y - this.predictedTank.y;
-      const errorDist = Math.sqrt(dx * dx + dy * dy);
-
-      if (errorDist < RECONCILE_DONE_THRESHOLD) {
-        this.serverTankTarget = null;
-      } else {
-        this.predictedTank = {
-          ...this.predictedTank,
-          x: this.predictedTank.x + dx * RECONCILE_LERP_PER_FRAME,
-          y: this.predictedTank.y + dy * RECONCILE_LERP_PER_FRAME,
-          angle: this.predictedTank.angle + shortestAngleDelta(this.serverTankTarget.angle, this.predictedTank.angle) * RECONCILE_LERP_PER_FRAME,
-        };
+    if (input.fire && !hasMissileAmmo) {
+      const perfNow = performance.now();
+      let bulletCount = 0;
+      const localTankId = this.predictedTank.id;
+      for (const b of this.activeBullets.values()) {
+        if (b.ownerId === localTankId) bulletCount++;
+      }
+      if (canFireBullet(perfNow, this.lastFireTime, bulletCount)) {
+        this.lastFireTime = perfNow;
+        const localId = `predicted_${this.nextLocalBulletSeq++}`;
+        const bullet = createBullet(localId, this.predictedTank);
+        this.activeBullets.set(localId, bullet);
+        this.pendingLocalBullets.set(localId, bullet);
       }
     }
 
-    // Advance bullets locally at 60fps with client-side wall bounce detection
-    // for immediate visual feedback. Server bounce events smooth any discrepancy.
-    const toRemove: string[] = [];
+    // Advance tank physics
+    const final = this.stepTankPhysics(prevTank, input, dt);
+    this.predictedTank = final;
+
+    // Store in input buffer for server reconciliation replay
+    this.inputBuffer.push({
+      seq,
+      keys: input,
+      dt,
+      predictedX: final.x,
+      predictedY: final.y,
+      predictedAngle: final.angle,
+    });
+
+    // Cap buffer size
+    if (this.inputBuffer.length > INPUT_BUFFER_CAP) {
+      this.inputBuffer.splice(0, this.inputBuffer.length - INPUT_BUFFER_CAP);
+    }
+
+    // Advance bullets with wall bounce
+    const bulletToRemove: string[] = [];
     for (const [id, bullet] of this.activeBullets) {
       const advanced = advanceBullet(bullet, dt, this.mazeSegments);
       if (!advanced) {
-        toRemove.push(id);
+        bulletToRemove.push(id);
         continue;
       }
-      // For unconfirmed predicted bullets, discard if server hasn't confirmed in time
       if (this.pendingLocalBullets.has(id) && advanced.age >= UNCONFIRMED_BULLET_MAX_AGE_S) {
-        toRemove.push(id);
+        bulletToRemove.push(id);
         continue;
       }
       this.activeBullets.set(id, advanced);
     }
-    for (const id of toRemove) {
+    for (const id of bulletToRemove) {
       this.activeBullets.delete(id);
       this.pendingLocalBullets.delete(id);
     }
 
-    // Advance missiles locally at 60fps
-    // Build tank snapshots once for homing targets
+    // Advance missiles with homing + wall bounce
     const missileTankSnapshots: TankState[] = [];
-    const interpState = this.getInterpolatedState();
-    if (interpState) {
-      interpState.tanks.forEach((t) => {
-        if (t.alive) {
-          missileTankSnapshots.push({ id: t.id, x: t.x, y: t.y, angle: t.angle, speed: 0 });
-        }
-      });
-    }
-    // Override local tank with prediction
     if (this.predictedTank) {
-      const idx = missileTankSnapshots.findIndex((t) => t.id === this.predictedTank?.id);
-      if (idx >= 0) {
-        missileTankSnapshots[idx] = this.predictedTank;
-      }
+      missileTankSnapshots.push(this.predictedTank);
     }
+    this.remoteTanks.forEach((remote, sessionId) => {
+      const alive = this.tankAliveState.get(sessionId);
+      if (alive) {
+        missileTankSnapshots.push({
+          id: sessionId,
+          x: remote.x,
+          y: remote.y,
+          angle: remote.angle,
+          speed: remote.speed,
+        });
+      }
+    });
 
-    // Advance missiles with homing + client-side wall bounce detection.
-    // Server bounce events smooth any discrepancy.
     const missileToRemove: string[] = [];
     for (const [id, missile] of this.activeMissiles) {
       const prevX = missile.x;
@@ -637,34 +643,82 @@ export class GameEngine {
         continue;
       }
 
-      // Handle wall bounces client-side for immediate visual feedback
-      let result: BulletState = {
-        id: updated.id,
-        ownerId: updated.ownerId,
-        x: updated.x,
-        y: updated.y,
-        vx: updated.vx,
-        vy: updated.vy,
-        age: updated.age,
-      };
+      // Wall bounce detection for missiles
+      let resultX = updated.x;
+      let resultY = updated.y;
+      let resultVx = updated.vx;
+      let resultVy = updated.vy;
       for (const wall of this.mazeSegments) {
-        const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, result.x, result.y, wall);
+        const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, resultX, resultY, wall);
         if (crossed) {
-          result = reflectBulletAtWall(result, wall, hitX, hitY, MISSILE_RADIUS);
+          const reflected = reflectBulletAtWall(
+            { id, ownerId: missile.ownerId, x: resultX, y: resultY, vx: resultVx, vy: resultVy, age: 0 },
+            wall,
+            hitX,
+            hitY,
+            MISSILE_RADIUS,
+          );
+          resultX = reflected.x;
+          resultY = reflected.y;
+          resultVx = reflected.vx;
+          resultVy = reflected.vy;
           break;
         }
       }
 
-      missile.x = result.x;
-      missile.y = result.y;
-      missile.vx = result.vx;
-      missile.vy = result.vy;
+      missile.x = resultX;
+      missile.y = resultY;
+      missile.vx = resultVx;
+      missile.vy = resultVy;
       missile.age = updated.age;
       missile.initialTargetId = updated.initialTargetId;
     }
     for (const id of missileToRemove) {
       this.activeMissiles.delete(id);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Interpolate remote tanks
+  // -------------------------------------------------------------------------
+
+  private interpolateRemoteTanks(): void {
+    const now = performance.now();
+    this.remoteTanks.forEach((remote) => {
+      const elapsed = now - remote.lastUpdateTime;
+      const t = Math.min(elapsed / remote.updateInterval, 2.0);
+      const tClamped = Math.min(t, 1.0);
+
+      // Lerp from prev to target
+      remote.x = remote.prevX + (remote.targetX - remote.prevX) * tClamped;
+      remote.y = remote.prevY + (remote.targetY - remote.prevY) * tClamped;
+
+      // Use shortestAngleDelta for angle interpolation
+      const angleDelta = shortestAngleDelta(remote.targetAngle, remote.prevAngle);
+      remote.angle = remote.prevAngle + angleDelta * tClamped;
+
+      remote.speed = remote.targetSpeed;
+
+      // Dead-reckon beyond target if moving
+      if (t > 1.0 && remote.speed !== 0) {
+        const extraTime = (elapsed - remote.updateInterval) / 1000;
+        const rad = degreesToRadians(remote.angle);
+        remote.x += Math.cos(rad) * remote.speed * extraTime;
+        remote.y += Math.sin(rad) * remote.speed * extraTime;
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Render loop
+  // -------------------------------------------------------------------------
+
+  private startRenderLoop(): void {
+    const render = (): void => {
+      this.draw();
+      this.animFrameId = requestAnimationFrame(render);
+    };
+    this.animFrameId = requestAnimationFrame(render);
   }
 
   private draw(): void {
@@ -676,10 +730,8 @@ export class GameEngine {
     }
 
     const now = Date.now();
-    const state = this.getInterpolatedState();
-    if (!state) return;
 
-    // Run client-side prediction with fixed timestep for deterministic physics
+    // Fixed timestep accumulator for local prediction
     const perfNow = performance.now();
     if (this.lastPredictionTime === 0) {
       this.lastPredictionTime = perfNow;
@@ -689,38 +741,48 @@ export class GameEngine {
     frameDt = Math.min(frameDt, MAX_PHYSICS_STEPS_PER_FRAME * PHYSICS_STEP);
     this.physicsAccumulator += frameDt;
 
-    const localTank = state.tanks.get(this.localSessionId);
-    const localEffects = localTank?.effects ?? [];
     while (this.physicsAccumulator >= PHYSICS_STEP) {
-      this.runPrediction(PHYSICS_STEP, localEffects);
+      this.runPrediction(PHYSICS_STEP);
       this.physicsAccumulator -= PHYSICS_STEP;
     }
 
-    for (const powerup of state.powerups) {
+    // Interpolate remote tanks
+    this.interpolateRemoteTanks();
+
+    // Draw powerups
+    for (const powerup of this.currentPowerups) {
       drawPowerup(this.ctx, powerup, now);
     }
 
+    // Draw tanks
     const tankColors = ['#4ade80', '#f87171'];
-    let colorIdx = 0;
-    state.tanks.forEach((tank, sessionId) => {
-      const color = tankColors[colorIdx % 2];
-      colorIdx++;
-      if (!tank.alive) return;
 
-      // Use predicted position for the local tank, interpolated for remote tanks
-      if (sessionId === this.localSessionId && this.predictedTank) {
-        drawTank(this.ctx, this.predictedTank, color);
-      } else {
-        const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
-        drawTank(this.ctx, ts, color);
+    // Draw local tank
+    if (this.predictedTank) {
+      const localAlive = this.tankAliveState.get(this.localSessionId);
+      if (localAlive) {
+        const localOrderIdx = this.tankSessionOrder.indexOf(this.localSessionId);
+        const localColor = tankColors[localOrderIdx >= 0 ? localOrderIdx % 2 : 0];
+        drawTank(this.ctx, this.predictedTank, localColor);
       }
+    }
+
+    // Draw remote tanks
+    this.remoteTanks.forEach((remote, sessionId) => {
+      const alive = this.tankAliveState.get(sessionId);
+      if (!alive) return;
+      const orderIdx = this.tankSessionOrder.indexOf(sessionId);
+      const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 1];
+      const ts: TankState = { id: sessionId, x: remote.x, y: remote.y, angle: remote.angle, speed: remote.speed };
+      drawTank(this.ctx, ts, color);
     });
 
-    // Draw all active bullets (both server-confirmed and locally predicted)
+    // Draw bullets
     for (const bullet of this.activeBullets.values()) {
       drawBullet(this.ctx, bullet);
     }
 
+    // Draw missiles
     for (const missile of this.activeMissiles.values()) {
       drawMissile(this.ctx, missile);
     }
@@ -731,18 +793,17 @@ export class GameEngine {
       drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime);
     }
 
-    // Collect effects for HUD missile indicators
-    const tankEntries = Array.from(state.tanks.values());
-    const p1Effects = tankEntries[0]?.effects ?? [];
-    const p2Effects = tankEntries[1]?.effects ?? [];
+    // HUD effects: gather by session order
+    const p1SessionId = this.tankSessionOrder[0] ?? '';
+    const p2SessionId = this.tankSessionOrder[1] ?? '';
+    const p1Effects = this.tankEffects.get(p1SessionId) ?? [];
+    const p2Effects = this.tankEffects.get(p2SessionId) ?? [];
 
     if (this.isPractice) {
-      // Practice mode: show missile indicators without names/lives/bet
       drawHUD(this.ctx, width, height, '', '', 0, 0, 0, p1Effects, p2Effects);
     } else {
-      const livesArr = Array.from(state.lives.values());
-      const p1Lives = livesArr[0] ?? 0;
-      const p2Lives = livesArr[1] ?? 0;
+      const p1Lives = this.currentLives.get(p1SessionId) ?? 0;
+      const p2Lives = this.currentLives.get(p2SessionId) ?? 0;
       drawHUD(
         this.ctx,
         width,
@@ -757,8 +818,8 @@ export class GameEngine {
       );
     }
 
-    if (state.phase === 'countdown') {
-      drawCountdown(this.ctx, width, height, state.countdown);
+    if (this.currentPhase === 'countdown') {
+      drawCountdown(this.ctx, width, height, this.currentCountdown);
     }
   }
 

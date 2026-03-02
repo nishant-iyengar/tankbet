@@ -26,12 +26,14 @@ export interface Powerup {
 }
 
 export const Tank = schema({
-  id:    { type: 'string',  default: '' },
-  x:     { type: 'float32', default: 0 },
-  y:     { type: 'float32', default: 0 },
-  angle: { type: 'float32', default: 0 },
-  alive: { type: 'boolean', default: true },
-  effects: [ActiveEffect],
+  id:         { type: 'string',  default: '' },
+  x:          { type: 'float32', default: 0 },
+  y:          { type: 'float32', default: 0 },
+  angle:      { type: 'float32', default: 0 },
+  alive:      { type: 'boolean', default: true },
+  speed:      { type: 'float32', default: 0 },
+  lastAckSeq: { type: 'uint16',  default: 0 },
+  effects:    [ActiveEffect],
 }, 'Tank');
 export interface Tank {
   id: string;
@@ -39,6 +41,8 @@ export interface Tank {
   y: number;
   angle: number;
   alive: boolean;
+  speed: number;
+  lastAckSeq: number;
   effects: ArraySchema<ActiveEffect>;
 }
 
@@ -52,6 +56,7 @@ export const TankRoomState = schema({
   winnerId:      { type: 'string', default: '' },
   roundWinnerId: { type: 'string', default: '' }, // userId of round winner, '' = tie
   lives:         { map: 'int8' },
+  serverTick:    { type: 'uint32', default: 0 },
 }, 'TankRoomState');
 export interface TankRoomState {
   tanks:         MapSchema<Tank>;
@@ -61,4 +66,5 @@ export interface TankRoomState {
   winnerId:      string;
   roundWinnerId: string;
   lives:         MapSchema<number>;
+  serverTick:    number;
 }

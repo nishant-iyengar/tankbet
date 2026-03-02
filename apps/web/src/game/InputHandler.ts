@@ -75,4 +75,8 @@ export class InputHandler {
   getKeys(): InputState {
     return { ...this.keys };
   }
+
+  getSeq(): number {
+    return this.seq;
+  }
 }
