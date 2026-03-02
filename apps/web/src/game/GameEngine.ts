@@ -150,10 +150,14 @@ export class GameEngine {
   private lastPredictionTime = 0;
   private physicsAccumulator = 0;
 
+  // 1-tick input delay: match server input timing to eliminate prediction error
+  private delayedInput: InputState = { up: false, down: false, left: false, right: false, fire: false };
+
   // Visual offset correction: render-only, never touches simulation
   private displayOffsetX = 0;
   private displayOffsetY = 0;
   private displayOffsetAngle = 0;
+
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -333,10 +337,11 @@ export class GameEngine {
             if (elapsed > 0 && elapsed < 200) {
               remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
             }
-            // Shift current render position to prev
-            remote.prevX = remote.x;
-            remote.prevY = remote.y;
-            remote.prevAngle = remote.angle;
+            // Shift previous target to prev (not render position, which
+            // depends on frame timing and creates variable interpolation)
+            remote.prevX = remote.targetX;
+            remote.prevY = remote.targetY;
+            remote.prevAngle = remote.targetAngle;
             // Set new target
             remote.targetX = tank.x;
             remote.targetY = tank.y;
@@ -372,6 +377,8 @@ export class GameEngine {
     room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
       const bullet = this.activeBullets.get(data.id);
       if (bullet) {
+        bullet.x = data.x;
+        bullet.y = data.y;
         bullet.vx = data.vx;
         bullet.vy = data.vy;
       }
@@ -411,6 +418,8 @@ export class GameEngine {
     room.onMessage('missile:bounce', (data: MissileBounceEvent) => {
       const missile = this.activeMissiles.get(data.id);
       if (missile) {
+        missile.x = data.x;
+        missile.y = data.y;
         missile.vx = data.vx;
         missile.vy = data.vy;
       }
@@ -525,12 +534,16 @@ export class GameEngine {
     // to avoid accumulating drift that causes flicker on phase transition
     const skipTankPrediction = this.currentPhase !== 'playing';
 
-    const input = this.inputHandler.getKeys();
+    const currentInput = this.inputHandler.getKeys();
 
-    // Advance tank physics locally for instant feedback
+    // Advance tank physics using the PREVIOUS tick's input.
+    // This 1-tick delay (~16.67ms, imperceptible) matches the server's
+    // behavior where input arrives between ticks and applies on the next one,
+    // eliminating the systematic 2.13px prediction error on input changes.
     if (!skipTankPrediction) {
-      this.predictedTank = this.stepTankPhysics(this.predictedTank, input, dt);
+      this.predictedTank = this.stepTankPhysics(this.predictedTank, this.delayedInput, dt);
     }
+    this.delayedInput = currentInput;
 
     // Advance bullets with wall bounce
     const bulletToRemove: string[] = [];
@@ -646,8 +659,9 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private decayDisplayOffset(frameDt: number): void {
-    // Rate ~8 → corrections converge in ~150ms
-    const CORRECTION_RATE = 8;
+    // Rate ~10 → corrections converge in ~100ms. Fast enough to absorb
+    // the systematic 1-tick (2.13px) prediction error each 50ms patch.
+    const CORRECTION_RATE = 10;
     const keep = Math.exp(-CORRECTION_RATE * frameDt);
 
     this.displayOffsetX *= keep;

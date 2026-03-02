@@ -176,7 +176,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.angle = playerIdx === 0 ? 0 : 180;
       tank.alive = true;
       tank.speed = 0;
-      tank.lastAckSeq = 0;
       tank.effects.splice(0, tank.effects.length);
     });
 

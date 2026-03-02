@@ -32,7 +32,6 @@ export const Tank = schema({
   angle:      { type: 'float32', default: 0 },
   alive:      { type: 'boolean', default: true },
   speed:      { type: 'float32', default: 0 },
-  lastAckSeq: { type: 'uint16',  default: 0 },
   effects:    [ActiveEffect],
 }, 'Tank');
 export interface Tank {
@@ -42,7 +41,6 @@ export interface Tank {
   angle: number;
   alive: boolean;
   speed: number;
-  lastAckSeq: number;
   effects: ArraySchema<ActiveEffect>;
 }
 
