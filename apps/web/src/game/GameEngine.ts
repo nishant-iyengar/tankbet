@@ -18,6 +18,7 @@ import {
   MAZE_ROWS,
   CELL_SIZE,
   INTERPOLATION_DELAY_MS,
+  PowerupType,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -195,12 +196,23 @@ export class GameEngine {
           }
         }
         if (bestId !== null) {
-          // Replace predicted bullet with server-confirmed bullet
+          // Promote predicted bullet: keep its advanced position but swap to
+          // the server-authoritative ID so future bounce/remove events match.
+          const predicted = this.activeBullets.get(bestId);
           this.pendingLocalBullets.delete(bestId);
           this.activeBullets.delete(bestId);
+          if (predicted) {
+            this.activeBullets.set(data.id, {
+              ...predicted,
+              id: data.id,
+              vx: data.vx,
+              vy: data.vy,
+            });
+            return; // already tracking this bullet — skip adding at spawn pos
+          }
         }
       }
-      // Add the server bullet to active set
+      // Add the server bullet to active set (remote player or no matching prediction)
       this.activeBullets.set(data.id, {
         id: data.id,
         ownerId: data.ownerId,
@@ -462,11 +474,23 @@ export class GameEngine {
     };
   }
 
-  private runPrediction(dt: number): void {
+  private runPrediction(dt: number, localEffects: ActiveEffectData[]): void {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
 
     const input = this.inputHandler.getKeys();
     const prevTank = this.predictedTank;
+
+    // Skip bullet prediction when tank has a missile powerup — server fires a missile instead
+    const hasMissileAmmo = localEffects.some(
+      (e) => e.type === PowerupType.TARGETING_MISSILE && e.remainingAmmo > 0,
+    );
+
+    if (input.fire && hasMissileAmmo) {
+      console.log('[prediction] skipping bullet — has missile ammo', localEffects);
+    }
+    if (input.fire && !hasMissileAmmo && localEffects.length > 0) {
+      console.log('[prediction] firing bullet despite effects', localEffects);
+    }
 
     // Fire every tick while fire is held AND cooldown ready (matches server behavior)
     const now = performance.now();
@@ -477,7 +501,7 @@ export class GameEngine {
       if (b.ownerId === localTankId) confirmedCount++;
     }
     const totalBulletCount = confirmedCount + this.pendingLocalBullets.size;
-    if (input.fire && canFireBullet(now, this.lastFireTime, totalBulletCount)) {
+    if (input.fire && !hasMissileAmmo && canFireBullet(now, this.lastFireTime, totalBulletCount)) {
       this.lastFireTime = now;
       const localId = `predicted_${this.nextLocalBulletSeq++}`;
       const bullet = createBullet(localId, this.predictedTank);
@@ -551,7 +575,9 @@ export class GameEngine {
     const dt = (perfNow - this.lastPredictionTime) / 1000;
     this.lastPredictionTime = perfNow;
     if (dt > 0 && dt <= 0.1) {
-      this.runPrediction(dt);
+      const localTank = state.tanks.get(this.localSessionId);
+      const localEffects = localTank?.effects ?? [];
+      this.runPrediction(dt, localEffects);
     }
 
     for (const powerup of state.powerups) {
