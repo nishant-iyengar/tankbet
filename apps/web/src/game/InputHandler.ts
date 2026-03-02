@@ -26,8 +26,8 @@ export class InputHandler {
   private handleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private handleKeyUp: ((e: KeyboardEvent) => void) | null = null;
 
-  attach(playerIndex: 0 | 1, onInput: (keys: InputState, seq: number) => void): void {
-    this.onInput = onInput;
+  attach(playerIndex: 0 | 1, onInput?: (keys: InputState, seq: number) => void): void {
+    this.onInput = onInput ?? null;
     this.keyMap = playerIndex === 0 ? P1_KEYS : P2_KEYS;
     this.keys = { up: false, down: false, left: false, right: false, fire: false };
     this.seq = 0;

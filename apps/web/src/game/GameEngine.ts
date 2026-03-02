@@ -162,6 +162,7 @@ export class GameEngine {
 
   // Gambetta reconciliation
   private inputBuffer: InputRecord[] = [];
+  private predictionSeq = 0;
 
   // Remote tank interpolation
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -499,11 +500,9 @@ export class GameEngine {
     });
 
     // -----------------------------------------------------------------------
-    // Input handler
+    // Input handler — key tracking only; input is sent per prediction tick
     // -----------------------------------------------------------------------
-    this.inputHandler.attach(this.playerIndex, (keys: InputState, seq: number) => {
-      this.room?.send('input', { keys, seq });
-    });
+    this.inputHandler.attach(this.playerIndex);
 
     this.startRenderLoop();
   }
@@ -542,8 +541,15 @@ export class GameEngine {
     if (!this.predictedTank || this.mazeSegments.length === 0) return;
 
     const input = this.inputHandler.getKeys();
-    const seq = this.inputHandler.getSeq();
+    this.predictionSeq++;
+    const seq = this.predictionSeq;
     const prevTank = this.predictedTank;
+
+    // Send input to server every prediction tick so each tick has a unique seq.
+    // This is required for Gambetta reconciliation — without per-tick seqs,
+    // holding a key causes all buffer entries to share one seq and get discarded
+    // together, producing zero replay entries and snapping to server position.
+    this.room?.send('input', { keys: input, seq });
 
     // Advance tank physics
     const final = this.stepTankPhysics(prevTank, input, dt);
