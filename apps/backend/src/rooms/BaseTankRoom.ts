@@ -234,7 +234,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const cooldownReady = (now - lastFired) >= BULLET_FIRE_COOLDOWN_MS;
 
       if (input.fire && hasMissileAmmo && cooldownReady) {
-        console.log(`[server] MISSILE fired by ${sessionId}, setting cooldown to now+${MISSILE_FIRE_EXTRA_COOLDOWN_MS}`);
         // Add extra cooldown after missile to prevent accidental bullet fire
         this.lastFiredAt.set(sessionId, now + MISSILE_FIRE_EXTRA_COOLDOWN_MS);
 
@@ -267,7 +266,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
           }
         }
       } else if (input.fire && canFire) {
-        console.log(`[server] BULLET fired by ${sessionId}, missile ammo=${hasMissileAmmo}, cooldownReady=${cooldownReady}`);
         this.lastFiredAt.set(sessionId, now);
         this.bulletIdCounter++;
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState);
