@@ -36,9 +36,9 @@ interface TankSnapshot {
 }
 
 // Interpolation buffer delay — render this far in the past.
-// At 20Hz patches (50ms intervals), buffer 2 ticks = 100ms. This ensures
+// At 60Hz patches (~17ms intervals), buffer ~3 ticks = 50ms. This ensures
 // we always have two snapshots to lerp between, even if one packet is late.
-const INTERP_DELAY_MS = 100;
+const INTERP_DELAY_MS = 50;
 const MAX_SNAPSHOTS = 8;
 
 interface TankInterpolationState {
@@ -391,9 +391,9 @@ export class GameEngine {
           // would cause an instant visual jump on the first movement frame.
           const lastSnap = state.snapshots[state.snapshots.length - 1];
           if (lastSnap && snapshotNow - lastSnap.time > 200) {
-            // Bridge: old position, placed one patch interval before the new snapshot
+            // Bridge: old position, placed one patch interval (~17ms at 60Hz) before the new snapshot
             state.snapshots = [
-              { time: snapshotNow - 50, x: lastSnap.x, y: lastSnap.y, angle: lastSnap.angle, speed: lastSnap.speed },
+              { time: snapshotNow - 17, x: lastSnap.x, y: lastSnap.y, angle: lastSnap.angle, speed: lastSnap.speed },
               snap,
             ];
           } else {

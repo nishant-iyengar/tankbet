@@ -57,9 +57,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.spawnPositions = getSpawnPositions(this.maze);
 
     // Decouple patch rate from physics tick rate. Physics runs at 100Hz for
-    // accuracy, but network patches are sent at 20Hz (every 50ms). Colyseus
+    // accuracy, but network patches are sent at 60Hz (every ~17ms). Colyseus
     // accumulates all state changes between patches and sends the net result.
-    this.patchRate = 50;
+    this.patchRate = 17;
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, { keys: message.keys });
