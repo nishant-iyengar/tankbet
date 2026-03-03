@@ -9,6 +9,8 @@ import {
   HUD_PADDING,
   TANK_COLOR_P1,
   TANK_COLOR_P2,
+  BULLET_LIFETIME_SECONDS,
+  BULLET_FADE_SECONDS,
 } from './constants';
 import type { TankState, BulletState } from './physics';
 import { degreesToRadians } from './physics';
@@ -54,11 +56,55 @@ export function drawTank(ctx: CanvasRenderingContext2D, tank: TankState, color: 
 
 export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState): void {
   ctx.save();
+
+  // Fade out in the last BULLET_FADE_SECONDS of lifetime
+  const fadeStart = BULLET_LIFETIME_SECONDS - BULLET_FADE_SECONDS;
+  if (bullet.age > fadeStart) {
+    ctx.globalAlpha = Math.max(0, 1 - (bullet.age - fadeStart) / BULLET_FADE_SECONDS);
+  }
+
   ctx.fillStyle = BULLET_COLOR;
   ctx.beginPath();
   ctx.arc(Math.round(bullet.x), Math.round(bullet.y), BULLET_RADIUS, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+}
+
+export interface TrackMark {
+  x: number;
+  y: number;
+  angle: number; // radians
+  time: number;  // Date.now() when created
+  color: string;
+}
+
+const TRACK_WIDTH = 6;   // distance between the two tread marks (from center)
+const TRACK_DOT_SIZE = 2; // radius of each tread dot
+
+export function drawTracks(ctx: CanvasRenderingContext2D, tracks: TrackMark[], now: number, lifetimeMs: number): void {
+  for (const track of tracks) {
+    const age = now - track.time;
+    const alpha = Math.max(0, 1 - age / lifetimeMs) * 0.35;
+    if (alpha <= 0) continue;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = track.color;
+
+    // Two tread marks perpendicular to the tank's heading
+    const perpX = -Math.sin(track.angle) * TRACK_WIDTH;
+    const perpY = Math.cos(track.angle) * TRACK_WIDTH;
+
+    ctx.beginPath();
+    ctx.arc(Math.round(track.x + perpX), Math.round(track.y + perpY), TRACK_DOT_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(Math.round(track.x - perpX), Math.round(track.y - perpY), TRACK_DOT_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
 }
 
 export function drawCountdown(

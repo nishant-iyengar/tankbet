@@ -14,11 +14,14 @@ import {
   drawMaze,
   drawTank,
   drawBullet,
+  drawTracks,
   drawCountdown,
   drawHUD,
   drawExplosion,
   EXPLOSION_DURATION_MS,
 } from '@tankbet/game-engine/renderer';
+import type { TrackMark } from '@tankbet/game-engine/renderer';
+import { TRACK_LIFETIME_MS, TRACK_SPACING } from '@tankbet/game-engine/constants';
 
 const BACKGROUND_COLOR = '#1a1a2e';
 import type { TankRoomState } from '@tankbet/game-engine/schema';
@@ -143,6 +146,10 @@ export class GameEngine {
 
   // Track session ID insertion order for color assignment
   private tankSessionOrder: string[] = [];
+
+  // Tank track marks (tread trails)
+  private trackMarks: TrackMark[] = [];
+  private lastTrackPos = new Map<string, { x: number; y: number }>();
 
   // userId → sessionId mapping (for looking up visual tank position by ownerId)
   private userIdToSessionId = new Map<string, string>();
@@ -614,9 +621,41 @@ export class GameEngine {
     // Interpolate all tanks
     this.interpolateTanks();
 
-    // Draw all tanks uniformly
+    // Emit track marks for moving tanks
     const tankColors = ['#4ade80', '#f87171'];
+    this.tankStates.forEach((state, sessionId) => {
+      const alive = this.tankAliveState.get(sessionId);
+      if (!alive) return;
+      if (state.speed === 0) return;
 
+      const last = this.lastTrackPos.get(sessionId);
+      if (last) {
+        const dx = state.x - last.x;
+        const dy = state.y - last.y;
+        if (dx * dx + dy * dy >= TRACK_SPACING * TRACK_SPACING) {
+          const orderIdx = this.tankSessionOrder.indexOf(sessionId);
+          const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
+          this.trackMarks.push({
+            x: state.x,
+            y: state.y,
+            angle: degreesToRadians(state.angle),
+            time: now,
+            color,
+          });
+          this.lastTrackPos.set(sessionId, { x: state.x, y: state.y });
+        }
+      } else {
+        this.lastTrackPos.set(sessionId, { x: state.x, y: state.y });
+      }
+    });
+
+    // Prune expired track marks
+    this.trackMarks = this.trackMarks.filter((t) => now - t.time < TRACK_LIFETIME_MS);
+
+    // Draw tracks behind tanks
+    drawTracks(this.ctx, this.trackMarks, now, TRACK_LIFETIME_MS);
+
+    // Draw all tanks uniformly
     this.tankStates.forEach((state, sessionId) => {
       const alive = this.tankAliveState.get(sessionId);
       if (!alive) return;
@@ -670,6 +709,8 @@ export class GameEngine {
 
   setMazeSegments(segments: LineSegment[]): void {
     this.mazeSegments = segments;
+    this.trackMarks = [];
+    this.lastTrackPos.clear();
     this.rebuildMazeCanvas();
   }
 

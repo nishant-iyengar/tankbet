@@ -33,6 +33,9 @@ export {
   TANK_COLOR_P1,
   TANK_COLOR_P2,
   RESPAWN_DELAY_MS,
+  BULLET_FADE_SECONDS,
+  TRACK_LIFETIME_MS,
+  TRACK_SPACING,
 } from './constants';
 export type { BetAmountCents } from './constants';
 
@@ -73,11 +76,14 @@ export {
   getRandomSpawn,
 } from './maze';
 
+export type { TrackMark } from './renderer';
+
 export {
   clearCanvas,
   drawMaze,
   drawTank,
   drawBullet,
+  drawTracks,
   drawCountdown,
   drawHUD,
   drawExplosion,
