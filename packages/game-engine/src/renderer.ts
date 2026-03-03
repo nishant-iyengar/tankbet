@@ -43,15 +43,57 @@ export function drawTank(ctx: CanvasRenderingContext2D, tank: TankState, color: 
   ctx.translate(Math.round(tank.x), Math.round(tank.y));
   ctx.rotate(degreesToRadians(tank.angle));
 
-  // Tank body — centered on origin
+  const hw = TANK_WIDTH / 2;
+  const hh = TANK_HEIGHT / 2;
+  const treadH = 3;        // height of each tread strip
+  const turretR = 4.5;     // turret circle radius
+  const bodyR = 3;         // corner rounding
+
+  // Tread strips — darker strips along top and bottom edges
+  ctx.fillStyle = darkenColor(color, 0.45);
+  ctx.fillRect(-hw, -hh, TANK_WIDTH, treadH);
+  ctx.fillRect(-hw, hh - treadH, TANK_WIDTH, treadH);
+
+  // Tank body — rounded rectangle, slightly inset from treads
   ctx.fillStyle = color;
-  ctx.fillRect(-TANK_WIDTH / 2, -TANK_HEIGHT / 2, TANK_WIDTH, TANK_HEIGHT);
+  ctx.beginPath();
+  ctx.roundRect(-hw + 1, -hh + 1, TANK_WIDTH - 2, TANK_HEIGHT - 2, bodyR);
+  ctx.fill();
+
+  // Body outline for definition
+  ctx.strokeStyle = darkenColor(color, 0.35);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(-hw, -hh, TANK_WIDTH, TANK_HEIGHT, bodyR);
+  ctx.stroke();
 
   // Barrel — extends from center toward the right (angle 0)
-  ctx.fillStyle = color;
-  ctx.fillRect(0, -BARREL_WIDTH / 2, BARREL_LENGTH, BARREL_WIDTH);
+  ctx.fillStyle = darkenColor(color, 0.2);
+  ctx.fillRect(turretR - 1, -BARREL_WIDTH / 2, BARREL_LENGTH - turretR + 1, BARREL_WIDTH);
+  // Barrel outline
+  ctx.strokeStyle = darkenColor(color, 0.4);
+  ctx.lineWidth = 0.75;
+  ctx.strokeRect(turretR - 1, -BARREL_WIDTH / 2, BARREL_LENGTH - turretR + 1, BARREL_WIDTH);
+
+  // Turret circle — sits on top at center
+  ctx.fillStyle = darkenColor(color, 0.15);
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = darkenColor(color, 0.4);
+  ctx.lineWidth = 0.75;
+  ctx.stroke();
 
   ctx.restore();
+}
+
+/** Darken a hex color by a factor (0 = unchanged, 1 = black). */
+function darkenColor(hex: string, factor: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const f = 1 - factor;
+  return `rgb(${(r * f) | 0},${(g * f) | 0},${(b * f) | 0})`;
 }
 
 export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState): void {
