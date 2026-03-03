@@ -1,6 +1,6 @@
 import { Room } from '@colyseus/core';
 import type { Client } from '@colyseus/core';
-import { TankRoomState, Tank } from './TankRoomState';
+import { TankRoomState, Tank, Bullet } from './TankRoomState';
 import {
   SERVER_TICK_HZ,
   MAZE_COLS,
@@ -20,7 +20,7 @@ import {
   collideTankWithEndpoints,
   advanceBullet,
 } from '@tankbet/game-engine/physics';
-import type { InputState, WallSegment, Vec2, TankState, BulletState } from '@tankbet/game-engine/physics';
+import type { InputState, WallSegment, Vec2, TankState } from '@tankbet/game-engine/physics';
 import { generateMaze, mazeToSegments, getSpawnPositions } from '@tankbet/game-engine/maze';
 import type { Maze } from '@tankbet/game-engine/maze';
 
@@ -42,9 +42,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
   protected spawnPositions: [Vec2, Vec2] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   protected lastFiredAt = new Map<string, number>();
-
-  // Projectiles stored as plain arrays + broadcast events (not in schema)
-  protected bullets: BulletState[] = [];
+  // Internal physics state for bullets (velocity/age not in schema — only x/y/ownerId are synced)
+  protected bulletPhysics = new Map<string, { vx: number; vy: number; age: number }>();
 
   protected initRoom(): void {
     this.state = new TankRoomState();
@@ -87,9 +86,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.state.lives.set(client.sessionId, LIVES_PER_GAME);
 
     client.send('maze', { segments: this.wallSegments });
-
-    // Sync existing projectiles to the newly joined player
-    client.send('bullet:sync', this.bullets);
   }
 
   protected startGameLoop(): void {
@@ -104,9 +100,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallSegments = mazeToSegments(this.maze);
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
 
-    // Clear all projectiles (broadcast events)
-    this.bullets = [];
-    this.broadcast('bullet:clear');
+    // Clear all projectiles
+    this.state.bullets.clear();
+    this.bulletPhysics.clear();
     this.lastFiredAt.clear();
 
     // Pick new random spawn positions for the fresh maze
@@ -155,8 +151,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const now = Date.now();
       const lastFired = this.lastFiredAt.get(sessionId) ?? 0;
 
-      // Count bullets owned by this tank in the array
-      const bulletCount = this.bullets.filter((b) => b.ownerId === tank.id).length;
+      // Count bullets owned by this tank in the schema map
+      let bulletCount = 0;
+      this.state.bullets.forEach((b) => { if (b.ownerId === tank.id) bulletCount++; });
 
       // canFireBullet checks both cooldown and max bullet count
       const canFire = canFireBullet(now, lastFired, bulletCount);
@@ -166,12 +163,14 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         this.bulletIdCounter++;
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState);
 
-        this.bullets.push(bulletState);
-        this.broadcast('bullet:fire', {
-          id: bulletState.id,
-          ownerId: bulletState.ownerId,
-          x: bulletState.x,
-          y: bulletState.y,
+        const schemaBullet = new Bullet();
+        schemaBullet.x = bulletState.x;
+        schemaBullet.y = bulletState.y;
+        schemaBullet.ownerId = bulletState.ownerId;
+        this.state.bullets.set(bulletState.id, schemaBullet);
+
+        // Store velocity/age in the internal map for physics simulation
+        this.bulletPhysics.set(bulletState.id, {
           vx: bulletState.vx,
           vy: bulletState.vy,
           age: bulletState.age,
@@ -188,17 +187,29 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.speed = updated.speed;
     });
 
-    // 2. Advance bullets (array-based + broadcast events)
-    const bulletsToRemove: number[] = [];
-    for (let i = 0; i < this.bullets.length; i++) {
-      const bullet = this.bullets[i];
-      if (!bullet) continue;
+    // 2. Advance bullets (schema-based)
+    const bulletsToRemove: string[] = [];
+    this.state.bullets.forEach((schemaBullet, bulletId) => {
+      const physics = this.bulletPhysics.get(bulletId);
+      if (!physics) {
+        bulletsToRemove.push(bulletId);
+        return;
+      }
 
-      const advanced = advanceBullet(bullet, dt, this.wallSegments);
+      const bulletState = {
+        id: bulletId,
+        ownerId: schemaBullet.ownerId,
+        x: schemaBullet.x,
+        y: schemaBullet.y,
+        vx: physics.vx,
+        vy: physics.vy,
+        age: physics.age,
+      };
+
+      const advanced = advanceBullet(bulletState, dt, this.wallSegments);
       if (!advanced) {
-        bulletsToRemove.push(i);
-        this.broadcast('bullet:remove', { id: bullet.id });
-        continue;
+        bulletsToRemove.push(bulletId);
+        return;
       }
 
       let hitTank = false;
@@ -207,24 +218,25 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
         if (checkBulletTankCollision(advanced, ts)) {
           hitTank = true;
-          bulletsToRemove.push(i);
-          this.broadcast('bullet:remove', { id: bullet.id });
+          bulletsToRemove.push(bulletId);
           this.onBulletHitTank(sessionId);
         }
       });
 
       if (!hitTank) {
-        // Broadcast bounce correction when velocity changed (wall reflection)
-        if (advanced.vx !== bullet.vx || advanced.vy !== bullet.vy) {
-          this.broadcast('bullet:bounce', { id: advanced.id, x: advanced.x, y: advanced.y, vx: advanced.vx, vy: advanced.vy });
-        }
-        this.bullets[i] = advanced;
+        // Update schema positions (synced to clients)
+        schemaBullet.x = advanced.x;
+        schemaBullet.y = advanced.y;
+        // Update internal physics state
+        physics.vx = advanced.vx;
+        physics.vy = advanced.vy;
+        physics.age = advanced.age;
       }
-    }
+    });
 
-    const uniqueBulletRemove = [...new Set(bulletsToRemove)].sort((a, b) => b - a);
-    for (const idx of uniqueBulletRemove) {
-      this.bullets.splice(idx, 1);
+    for (const bulletId of bulletsToRemove) {
+      this.state.bullets.delete(bulletId);
+      this.bulletPhysics.delete(bulletId);
     }
 
     // Send state patch immediately after each tick — guarantees exactly

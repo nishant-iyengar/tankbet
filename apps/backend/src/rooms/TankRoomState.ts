@@ -1,6 +1,7 @@
 // Re-export schema classes from the shared game-engine package.
 // This ensures the server and client use the SAME schema definitions.
 export {
+  Bullet,
   Tank,
   TankRoomState,
 } from '@tankbet/game-engine/schema';
