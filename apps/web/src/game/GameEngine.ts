@@ -7,6 +7,7 @@ import {
   advanceBullet,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
+import { PHYSICS_STEP } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -98,14 +99,17 @@ export class GameEngine {
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
 
-  // Frame timing for bullet advancement
+  // Fixed-timestep accumulator for bullet physics
   private lastFrameTime = 0;
+  private physicsAccumulator = 0;
 
   // Tank interpolation (all tanks, including local)
   private remoteTanks = new Map<string, RemoteTankState>();
 
   // Projectile state (event-driven)
   private activeBullets = new Map<string, BulletState>();
+  // Previous positions for render interpolation
+  private bulletPrevPositions = new Map<string, { x: number; y: number }>();
 
   // Game state tracking (replaces parseState/stateBuffer)
   private currentPhase = 'waiting';
@@ -268,8 +272,8 @@ export class GameEngine {
     room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
       const bullet = this.activeBullets.get(data.id);
       if (bullet) {
-        // Only correct velocity direction — position converges naturally
-        // since the client already simulates bounces locally
+        bullet.x = data.x;
+        bullet.y = data.y;
         bullet.vx = data.vx;
         bullet.vy = data.vy;
       }
@@ -277,10 +281,12 @@ export class GameEngine {
 
     room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
       this.activeBullets.delete(data.id);
+      this.bulletPrevPositions.delete(data.id);
     });
 
     room.onMessage('bullet:clear', () => {
       this.activeBullets.clear();
+      this.bulletPrevPositions.clear();
     });
 
     room.onMessage('bullet:sync', (bullets: BulletState[]) => {
@@ -351,13 +357,18 @@ export class GameEngine {
   // Advance projectiles (event-driven, client-side simulation)
   // -------------------------------------------------------------------------
 
-  private advanceProjectiles(dt: number): void {
+  private advanceProjectiles(): void {
     if (this.mazeSegments.length === 0) return;
 
-    // Advance bullets with wall bounce
+    // Save previous positions for render interpolation
+    for (const [id, bullet] of this.activeBullets) {
+      this.bulletPrevPositions.set(id, { x: bullet.x, y: bullet.y });
+    }
+
+    // Advance bullets with wall bounce (fixed timestep matching server)
     const bulletToRemove: string[] = [];
     for (const [id, bullet] of this.activeBullets) {
-      const advanced = advanceBullet(bullet, dt, this.mazeSegments);
+      const advanced = advanceBullet(bullet, PHYSICS_STEP, this.mazeSegments);
       if (!advanced) {
         bulletToRemove.push(id);
         continue;
@@ -366,6 +377,7 @@ export class GameEngine {
     }
     for (const id of bulletToRemove) {
       this.activeBullets.delete(id);
+      this.bulletPrevPositions.delete(id);
     }
   }
 
@@ -414,17 +426,23 @@ export class GameEngine {
 
     const now = Date.now();
 
-    // Advance bullets using raw frame delta for smooth rendering.
-    // Server corrects via bullet:bounce events on wall reflections.
+    // Fixed-timestep accumulator: step bullet physics at exactly PHYSICS_STEP
+    // to match server determinism, then interpolate the remainder for smooth rendering.
     const perfNow = performance.now();
     if (this.lastFrameTime === 0) {
       this.lastFrameTime = perfNow;
     }
     const frameDt = Math.min((perfNow - this.lastFrameTime) / 1000, 0.1);
     this.lastFrameTime = perfNow;
-    if (frameDt > 0) {
-      this.advanceProjectiles(frameDt);
+    this.physicsAccumulator += frameDt;
+
+    while (this.physicsAccumulator >= PHYSICS_STEP) {
+      this.advanceProjectiles();
+      this.physicsAccumulator -= PHYSICS_STEP;
     }
+
+    // Interpolation alpha: how far between prev and current physics state
+    const alpha = this.physicsAccumulator / PHYSICS_STEP;
 
     // Interpolate all tanks (local + remote)
     this.interpolateRemoteTanks();
@@ -441,9 +459,18 @@ export class GameEngine {
       drawTank(this.ctx, ts, color);
     });
 
-    // Draw bullets
-    for (const bullet of this.activeBullets.values()) {
-      drawBullet(this.ctx, bullet);
+    // Draw bullets with interpolation between previous and current physics positions
+    for (const [id, bullet] of this.activeBullets) {
+      const prev = this.bulletPrevPositions.get(id);
+      if (prev) {
+        drawBullet(this.ctx, {
+          ...bullet,
+          x: prev.x + (bullet.x - prev.x) * alpha,
+          y: prev.y + (bullet.y - prev.y) * alpha,
+        });
+      } else {
+        drawBullet(this.ctx, bullet);
+      }
     }
 
     // Draw and prune expired explosions
