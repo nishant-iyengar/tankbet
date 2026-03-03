@@ -385,10 +385,22 @@ export class GameEngine {
           state.angle = tank.angle;
           state.speed = tank.speed;
         } else {
-          // Push snapshot into buffer, cap size
-          state.snapshots.push(snap);
-          if (state.snapshots.length > MAX_SNAPSHOTS) {
-            state.snapshots.shift();
+          // If there's a large gap since the last snapshot (tank was idle, no
+          // patches sent), insert a "bridge" snapshot just before the new one
+          // with the old position. This prevents a lerp ratio of ~1.0 that
+          // would cause an instant visual jump on the first movement frame.
+          const lastSnap = state.snapshots[state.snapshots.length - 1];
+          if (lastSnap && snapshotNow - lastSnap.time > 200) {
+            // Bridge: old position, placed one patch interval before the new snapshot
+            state.snapshots = [
+              { time: snapshotNow - 50, x: lastSnap.x, y: lastSnap.y, angle: lastSnap.angle, speed: lastSnap.speed },
+              snap,
+            ];
+          } else {
+            state.snapshots.push(snap);
+            if (state.snapshots.length > MAX_SNAPSHOTS) {
+              state.snapshots.shift();
+            }
           }
         }
       });
