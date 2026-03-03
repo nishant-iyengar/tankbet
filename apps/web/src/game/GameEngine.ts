@@ -207,30 +207,32 @@ export class GameEngine {
     // Bullet event handlers (event-driven, not schema)
     // -----------------------------------------------------------------------
     room.onMessage('bullet:fire', (data: BulletFireEvent) => {
-      // Spawn the bullet at the visual tank's barrel tip, not the server
-      // position. The tank is rendered interpDelayMs in the past, so the
-      // server position is ahead of what the player sees. Spawning at the
-      // visual barrel tip looks correct.
-      let spawnX = data.x;
-      let spawnY = data.y;
-
-      const ownerTank = this.findTankByUserId(data.ownerId);
-      if (ownerTank) {
-        const rad = degreesToRadians(ownerTank.angle);
-        const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2;
-        spawnX = ownerTank.x + Math.cos(rad) * spawnDist;
-        spawnY = ownerTank.y + Math.sin(rad) * spawnDist;
-      }
-
+      // Physics starts at the server position so the bullet stays in sync
+      // with the authoritative simulation (no correction catch-up needed).
       const bullet: BulletState = {
         id: data.id,
         ownerId: data.ownerId,
-        x: spawnX,
-        y: spawnY,
+        x: data.x,
+        y: data.y,
         vx: data.vx,
         vy: data.vy,
         age: 0,
       };
+
+      // Set a visual offset so the bullet appears to leave from the visual
+      // tank's barrel tip (which is rendered interpDelayMs in the past).
+      // The offset decays smoothly via the existing correction system.
+      const ownerTank = this.findTankByUserId(data.ownerId);
+      if (ownerTank) {
+        const rad = degreesToRadians(ownerTank.angle);
+        const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2;
+        const visualX = ownerTank.x + Math.cos(rad) * spawnDist;
+        const visualY = ownerTank.y + Math.sin(rad) * spawnDist;
+        this.bulletOffsets.set(data.id, {
+          dx: visualX - data.x,
+          dy: visualY - data.y,
+        });
+      }
 
       this.activeBullets.set(data.id, bullet);
     });
