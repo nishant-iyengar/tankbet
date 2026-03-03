@@ -25,7 +25,7 @@ export function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height
   ctx.fillRect(0, 0, width, height);
 }
 
-export function drawMaze(ctx: CanvasRenderingContext2D, segments: LineSegment[]): void {
+export function drawMaze(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, segments: LineSegment[]): void {
   ctx.strokeStyle = WALL_COLOR;
   ctx.lineWidth = WALL_LINE_WIDTH;
   ctx.beginPath();
@@ -38,7 +38,7 @@ export function drawMaze(ctx: CanvasRenderingContext2D, segments: LineSegment[])
 
 export function drawTank(ctx: CanvasRenderingContext2D, tank: TankState, color: string): void {
   ctx.save();
-  ctx.translate(tank.x, tank.y);
+  ctx.translate(Math.round(tank.x), Math.round(tank.y));
   ctx.rotate(degreesToRadians(tank.angle));
 
   // Tank body — centered on origin
@@ -56,7 +56,7 @@ export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState): 
   ctx.save();
   ctx.fillStyle = BULLET_COLOR;
   ctx.beginPath();
-  ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
+  ctx.arc(Math.round(bullet.x), Math.round(bullet.y), BULLET_RADIUS, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }

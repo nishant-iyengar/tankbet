@@ -19,6 +19,8 @@ import {
   drawExplosion,
   EXPLOSION_DURATION_MS,
 } from '@tankbet/game-engine/renderer';
+
+const BACKGROUND_COLOR = '#1a1a2e';
 import type { TankRoomState } from '@tankbet/game-engine/schema';
 import { InputHandler } from './InputHandler';
 
@@ -99,6 +101,7 @@ export class GameEngine {
   private ctx: CanvasRenderingContext2D;
   private inputHandler: InputHandler;
   private mazeSegments: LineSegment[] = [];
+  private mazeCanvas: OffscreenCanvas | null = null;
   private animFrameId: number | null = null;
   private playerIndex: 0 | 1 = 0;
   private player1Name = '';
@@ -589,10 +592,15 @@ export class GameEngine {
 
   private draw(): void {
     const { width, height } = this.canvas;
-    clearCanvas(this.ctx, width, height);
 
-    if (this.mazeSegments.length > 0) {
-      drawMaze(this.ctx, this.mazeSegments);
+    if (this.mazeCanvas) {
+      // Blit pre-rendered maze + background in one call
+      this.ctx.drawImage(this.mazeCanvas, 0, 0);
+    } else {
+      clearCanvas(this.ctx, width, height);
+      if (this.mazeSegments.length > 0) {
+        drawMaze(this.ctx, this.mazeSegments);
+      }
     }
 
     const now = Date.now();
@@ -662,6 +670,23 @@ export class GameEngine {
 
   setMazeSegments(segments: LineSegment[]): void {
     this.mazeSegments = segments;
+    this.rebuildMazeCanvas();
+  }
+
+  private rebuildMazeCanvas(): void {
+    const { width, height } = this.canvas;
+    if (width === 0 || height === 0 || this.mazeSegments.length === 0) {
+      this.mazeCanvas = null;
+      return;
+    }
+    const offscreen = new OffscreenCanvas(width, height);
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+    // Fill background so we can blit the whole thing (replaces clearCanvas + drawMaze)
+    offCtx.fillStyle = BACKGROUND_COLOR;
+    offCtx.fillRect(0, 0, width, height);
+    drawMaze(offCtx, this.mazeSegments);
+    this.mazeCanvas = offscreen;
   }
 
   setInterpDelay(ms: number): void {
