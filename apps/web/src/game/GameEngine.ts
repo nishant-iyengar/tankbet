@@ -5,9 +5,10 @@ import type { InputState, TankState, BulletState } from '@tankbet/game-engine/ph
 import {
   shortestAngleDelta,
   advanceBullet,
+  degreesToRadians,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
-import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE } from '@tankbet/game-engine/constants';
+import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE, BARREL_LENGTH, TANK_WIDTH } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -140,6 +141,9 @@ export class GameEngine {
   // Track session ID insertion order for color assignment
   private tankSessionOrder: string[] = [];
 
+  // userId → sessionId mapping (for looking up visual tank position by ownerId)
+  private userIdToSessionId = new Map<string, string>();
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -200,30 +204,30 @@ export class GameEngine {
     // Bullet event handlers (event-driven, not schema)
     // -----------------------------------------------------------------------
     room.onMessage('bullet:fire', (data: BulletFireEvent) => {
+      // Spawn the bullet at the visual tank's barrel tip, not the server
+      // position. The tank is rendered INTERP_DELAY_MS in the past, so the
+      // server position is ahead of what the player sees. Spawning at the
+      // visual barrel tip looks correct.
+      let spawnX = data.x;
+      let spawnY = data.y;
+
+      const ownerTank = this.findTankByUserId(data.ownerId);
+      if (ownerTank) {
+        const rad = degreesToRadians(ownerTank.angle);
+        const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2;
+        spawnX = ownerTank.x + Math.cos(rad) * spawnDist;
+        spawnY = ownerTank.y + Math.sin(rad) * spawnDist;
+      }
+
       const bullet: BulletState = {
         id: data.id,
         ownerId: data.ownerId,
-        x: data.x,
-        y: data.y,
+        x: spawnX,
+        y: spawnY,
         vx: data.vx,
         vy: data.vy,
         age: 0,
       };
-
-      // Fast-forward the bullet by estimated one-way latency so the client
-      // starts at approximately where the server bullet currently is.
-      // This eliminates the K-tick offset that causes bounce desync.
-      let remaining = this.estimatedOneWayLatencySeconds;
-      while (remaining >= PHYSICS_STEP) {
-        const advanced = advanceBullet(bullet, PHYSICS_STEP, this.mazeSegments);
-        if (!advanced) return; // bullet expired during fast-forward
-        bullet.x = advanced.x;
-        bullet.y = advanced.y;
-        bullet.vx = advanced.vx;
-        bullet.vy = advanced.vy;
-        bullet.age = advanced.age;
-        remaining -= PHYSICS_STEP;
-      }
 
       this.activeBullets.set(data.id, bullet);
     });
@@ -338,6 +342,11 @@ export class GameEngine {
         this.tankSessionOrder.push(sessionId);
       }
 
+      // Map userId (tank.id) → sessionId for bullet spawn lookups
+      if (tank.id) {
+        this.userIdToSessionId.set(tank.id, sessionId);
+      }
+
       const now = performance.now();
       const snapshot: TankSnapshot = { time: now, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
       this.tankStates.set(sessionId, {
@@ -445,6 +454,13 @@ export class GameEngine {
     if (this.onPhaseChange) {
       this.onPhaseChange(this.currentPhase, this.currentWinnerId, this.currentRoundWinnerId);
     }
+  }
+
+  // Look up a tank's current visual state by userId (used for bullet spawn)
+  private findTankByUserId(userId: string): TankInterpolationState | undefined {
+    const sessionId = this.userIdToSessionId.get(userId);
+    if (!sessionId) return undefined;
+    return this.tankStates.get(sessionId);
   }
 
   // -------------------------------------------------------------------------
