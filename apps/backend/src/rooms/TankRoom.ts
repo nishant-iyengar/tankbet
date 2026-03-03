@@ -33,8 +33,19 @@ export class TankRoom extends BaseTankRoom {
   /**
    * Called via remoteRoomCall before reserveSeatFor to free the seat held by
    * a user's old session during the reconnection grace period.
+   *
+   * Clears the sessionToUserId mapping for the old session so that when the
+   * onLeave catch block fires (from the rejected deferred), it sees an empty
+   * mapping and skips the forfeit. Tank/lives/playerIdx state is preserved
+   * in their respective maps keyed by the old sessionId — onJoin will find
+   * them by scanning tank.id and remap to the new session.
    */
   evictUser(userId: string): void {
+    // Clear session→userId mapping so onLeave catch won't forfeit
+    this.sessionToUserId.forEach((uid, sid) => {
+      if (uid === userId) this.sessionToUserId.delete(sid);
+    });
+
     const pending = this.pendingReconnects.get(userId);
     if (pending) {
       this.pendingReconnects.delete(userId);
@@ -73,11 +84,18 @@ export class TankRoom extends BaseTankRoom {
       pending.reject(new Error('reconnected with new session'));
     }
 
-    // Check if this user already has a tank mapped to an old session (mid-game rejoin)
+    // Check if this user already has a tank mapped to an old session (mid-game rejoin).
+    // First check sessionToUserId (normal reconnect via onJoin rejecting deferred).
+    // If not found, scan tanks by tank.id === userId (evictUser cleared sessionToUserId).
     let existingSessionId: string | null = null;
     this.sessionToUserId.forEach((uid, sid) => {
       if (uid === auth.userId) existingSessionId = sid;
     });
+    if (existingSessionId === null) {
+      this.state.tanks.forEach((tank, sid) => {
+        if (tank.id === auth.userId) existingSessionId = sid;
+      });
+    }
 
     if (existingSessionId !== null) {
       // Remap the existing tank/state to the new session
@@ -96,8 +114,9 @@ export class TankRoom extends BaseTankRoom {
       if (tank !== undefined) this.state.tanks.set(client.sessionId, tank);
       if (lives !== undefined) this.state.lives.set(client.sessionId, lives);
 
-      // Re-send maze so the reconnected client can render
+      // Re-send maze and sync projectiles so the reconnected client can render
       client.send('maze', { segments: this.wallSegments });
+      client.send('bullet:sync', this.bullets);
       logger.info({ oldSessionId: existingSessionId, newSessionId: client.sessionId }, 'remapped existing player session');
     } else {
       this.spawnPlayer(client, auth.userId);
@@ -136,7 +155,6 @@ export class TankRoom extends BaseTankRoom {
 
     // Mark tank as dead immediately
     tank.alive = false;
-    tank.effects.splice(0, tank.effects.length);
 
     if (this.firstDeathSessionId === null) {
       // First death in this battle — start the tie window
@@ -189,6 +207,11 @@ export class TankRoom extends BaseTankRoom {
     this.state.phase = 'ended';
     this.state.winnerId = winnerId;
 
+    // patchRate is null (manual patching), and tick() returns early when
+    // phase !== 'playing'. Broadcast immediately so the remaining connected
+    // client receives the game-end state change.
+    this.broadcastPatch();
+
     const game = await prisma.game.findUnique({
       where: { id: this.gameDbId },
       include: { creatorCharity: true, opponentCharity: true },
@@ -232,6 +255,7 @@ export class TankRoom extends BaseTankRoom {
           data: { activeGameId: null },
         }),
       ]);
+      this.clock.setTimeout(() => { this.disconnect(); }, 5000);
       return;
     }
 
@@ -242,7 +266,10 @@ export class TankRoom extends BaseTankRoom {
     const winnerCharityId =
       winnerId === game.creatorId ? game.creatorCharityId : game.opponentCharityId;
 
-    if (!winnerCharityId) return;
+    if (!winnerCharityId) {
+      this.clock.setTimeout(() => { this.disconnect(); }, 5000);
+      return;
+    }
 
     await prisma.$transaction([
       prisma.game.update({
@@ -293,10 +320,13 @@ export class TankRoom extends BaseTankRoom {
         },
       }),
     ]);
+
+    this.clock.setTimeout(() => { this.disconnect(); }, 5000);
   }
 
   async onLeave(client: Client, _code: number): Promise<void> {
-    if (this.state.phase !== 'playing') {
+    const activePhases = ['playing', 'countdown', 'resolving'];
+    if (!activePhases.includes(this.state.phase)) {
       this.sessionToUserId.delete(client.sessionId);
       this.state.tanks.delete(client.sessionId);
       this.state.lives.delete(client.sessionId);

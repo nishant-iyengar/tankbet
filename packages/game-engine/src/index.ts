@@ -23,8 +23,6 @@ export {
   SERVER_TICK_HZ,
   SERVER_PATCH_HZ,
   PHYSICS_STEP,
-  INTERPOLATION_DELAY_MS,
-  SNAP_THRESHOLD_PX,
   WALL_FRICTION,
   CORNER_SHIELD_PADDING,
   BARREL_WIDTH,
@@ -34,19 +32,8 @@ export {
   TANK_COLOR_P1,
   TANK_COLOR_P2,
   RESPAWN_DELAY_MS,
-  PowerupType,
-  POWERUP_SPAWN_INTERVAL_MIN_S,
-  POWERUP_SPAWN_INTERVAL_MAX_S,
-  POWERUP_MAX_ON_FIELD,
-  POWERUP_COLLECTION_RADIUS,
-  MISSILE_SPEED,
-  MISSILE_RADIUS,
-  MISSILE_HOMING_DELAY_S,
-  MISSILE_TURN_SPEED_DEG,
-  MISSILE_LIFETIME_SECONDS,
-  MISSILE_COLOR,
 } from './constants';
-export type { PowerupType as PowerupTypeValue, BetAmountCents } from './constants';
+export type { BetAmountCents } from './constants';
 
 export type {
   Vec2,
@@ -72,6 +59,8 @@ export {
   collideTankWithEndpoints,
   bulletCrossesWall,
   reflectBulletAtWall,
+  advanceBullet,
+  shortestAngleDelta,
 } from './physics';
 
 export type { Cell, Wall, Maze, LineSegment } from './maze';
@@ -88,18 +77,8 @@ export {
   drawMaze,
   drawTank,
   drawBullet,
-  drawMissile,
-  drawPowerup,
   drawCountdown,
   drawHUD,
+  drawExplosion,
+  EXPLOSION_DURATION_MS,
 } from './renderer';
-
-export type { PowerupDef, ActiveEffectData, TankStats } from './powerups';
-export { POWERUP_DEFS, resolveStats, randomPowerupType } from './powerups';
-
-export type { MissileState } from './physics';
-export {
-  createMissile,
-  updateMissile,
-  checkCircleTankCollision,
-} from './physics';

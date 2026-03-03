@@ -24,7 +24,6 @@ export class PracticeRoom extends BaseTankRoom {
     if (!tank || !tank.alive) return;
 
     tank.alive = false;
-    tank.effects.splice(0, tank.effects.length);
 
     this.clock.setTimeout(() => {
       if (!this.maze) return;

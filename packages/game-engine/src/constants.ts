@@ -37,32 +37,7 @@ export const PLEDGE_FEE_RATE = 0.05;
 
 // Server
 export const LIVES_PER_GAME = 5;
-export const SERVER_TICK_HZ = 60;
-export const SERVER_PATCH_HZ = 60;
-export const PHYSICS_STEP = 1 / 60; // shared constant for both client and server
+export const SERVER_TICK_HZ = 100;
+export const SERVER_PATCH_HZ = 100;
+export const PHYSICS_STEP = 1 / 100; // shared constant for both client and server
 export const BULLET_FIRE_COOLDOWN_MS = 170; // min ms between shots per tank
-export const MISSILE_FIRE_EXTRA_COOLDOWN_MS = 100; // extra cooldown after firing a missile to prevent accidental bullet
-export const INTERPOLATION_DELAY_MS = 100;
-export const SNAP_THRESHOLD_PX = 40; // px — teleport to server if prediction drifts further
-
-// Powerups
-export const PowerupType = {
-  TARGETING_MISSILE: 'targeting_missile',
-} as const;
-export type PowerupType = (typeof PowerupType)[keyof typeof PowerupType];
-
-export const POWERUP_SPAWN_INTERVAL_MIN_S = 8;
-export const POWERUP_SPAWN_INTERVAL_MAX_S = 15;
-export const POWERUP_MAX_ON_FIELD = 2;
-export const POWERUP_COLLECTION_RADIUS = 22; // px — proximity to auto-collect
-
-// Targeting missile
-export const MISSILE_SPEED = 160;                // px/s (~21% faster than original 132)
-export const MISSILE_RADIUS = 3;                 // px — collision radius
-export const MISSILE_HOMING_DELAY_S = 1;         // seconds before switching to closest-tank homing
-export const MISSILE_TURN_SPEED_DEG = 150;       // deg/s — homing turn rate
-export const MISSILE_WALL_AVOID_RADIUS = 50;     // px — start dodging walls within this distance
-export const MISSILE_WALL_AVOID_STRENGTH = 5;    // avoidance force weight relative to homing force
-export const MISSILE_WALL_AVOID_TURN_DEG = 300;  // deg/s — fast turn budget used only for wall avoidance
-export const MISSILE_LIFETIME_SECONDS = 12;
-export const MISSILE_COLOR = '#f97316';          // orange

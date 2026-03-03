@@ -9,13 +9,10 @@ import {
   HUD_PADDING,
   TANK_COLOR_P1,
   TANK_COLOR_P2,
-  MISSILE_COLOR,
 } from './constants';
-import type { TankState, BulletState, MissileState } from './physics';
+import type { TankState, BulletState } from './physics';
 import { degreesToRadians } from './physics';
 import type { LineSegment } from './maze';
-import { POWERUP_DEFS } from './powerups';
-import type { ActiveEffectData } from './powerups';
 
 const BACKGROUND_COLOR = '#1a1a2e';
 const WALL_COLOR = '#ffffff';
@@ -84,47 +81,6 @@ export function drawCountdown(
   ctx.fillText(text, canvasWidth / 2, canvasHeight / 2);
 }
 
-export function drawMissile(ctx: CanvasRenderingContext2D, missile: MissileState): void {
-  ctx.save();
-  ctx.translate(missile.x, missile.y);
-  ctx.rotate(Math.atan2(missile.vy, missile.vx));
-
-  ctx.fillStyle = MISSILE_COLOR;
-
-  // Body + nose: rectangle with a pointed nose at the front (+x)
-  const noseLen = 3;
-  const halfBodyLen = 5;
-  const halfBodyW = 2;
-  ctx.beginPath();
-  ctx.moveTo(halfBodyLen + noseLen, 0);    // nose tip
-  ctx.lineTo(halfBodyLen, -halfBodyW);     // front shoulder top
-  ctx.lineTo(-halfBodyLen, -halfBodyW);    // rear shoulder top
-  ctx.lineTo(-halfBodyLen, halfBodyW);     // rear shoulder bottom
-  ctx.lineTo(halfBodyLen, halfBodyW);      // front shoulder bottom
-  ctx.closePath();
-  ctx.fill();
-
-  // Fins: two small delta fins at the tail
-  const finDepth = 2;
-  const finSpread = 3;
-  // top fin
-  ctx.beginPath();
-  ctx.moveTo(-halfBodyLen + 2, -halfBodyW);
-  ctx.lineTo(-halfBodyLen - finDepth, -halfBodyW - finSpread);
-  ctx.lineTo(-halfBodyLen - finDepth, -halfBodyW);
-  ctx.closePath();
-  ctx.fill();
-  // bottom fin
-  ctx.beginPath();
-  ctx.moveTo(-halfBodyLen + 2, halfBodyW);
-  ctx.lineTo(-halfBodyLen - finDepth, halfBodyW + finSpread);
-  ctx.lineTo(-halfBodyLen - finDepth, halfBodyW);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.restore();
-}
-
 export const EXPLOSION_DURATION_MS = 650;
 const EXPLOSION_PARTICLE_COUNT = 12;
 const EXPLOSION_MAX_RADIUS = 28;
@@ -179,62 +135,6 @@ export function drawExplosion(
   ctx.restore();
 }
 
-export function drawPowerup(
-  ctx: CanvasRenderingContext2D,
-  powerup: { type: string; x: number; y: number },
-  now: number,
-): void {
-  const def = POWERUP_DEFS[powerup.type];
-  if (!def) return;
-
-  const bob = Math.sin(now / 400) * 3;
-  const size = 14;
-
-  ctx.save();
-  ctx.translate(powerup.x, powerup.y + bob);
-
-  // Pulsing glow ring
-  ctx.globalAlpha = 0.3 + 0.2 * Math.sin(now / 300);
-  ctx.strokeStyle = def.color;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(0, 0, size, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Filled square body
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = def.color;
-  ctx.fillRect(-size / 2, -size / 2, size, size);
-
-  // Icon label
-  ctx.fillStyle = '#0a0e1a';
-  ctx.font = 'bold 10px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(def.label, 0, 0);
-
-  ctx.restore();
-}
-
-function drawMissileIcon(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  const radius = 7;
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = MISSILE_COLOR;
-  ctx.fill();
-  ctx.fillStyle = '#0a0e1a';
-  ctx.font = 'bold 9px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('M', x, y);
-  ctx.restore();
-}
-
-function hasWeaponEffect(effects: ActiveEffectData[]): boolean {
-  return effects.some((e) => POWERUP_DEFS[e.type]?.isWeapon);
-}
-
 export function drawHUD(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
@@ -244,29 +144,20 @@ export function drawHUD(
   player1Lives: number,
   player2Lives: number,
   betAmountCents: number,
-  player1Effects: ActiveEffectData[],
-  player2Effects: ActiveEffectData[],
 ): void {
   ctx.font = HUD_FONT;
   ctx.textBaseline = 'top';
 
   // Player 1 — top left
-  let p1TextEnd = HUD_PADDING;
   if (player1Name) {
     ctx.fillStyle = TANK_COLOR_P1;
     ctx.textAlign = 'left';
     const p1Hearts = '\u2665'.repeat(player1Lives);
     const p1Text = `${player1Name}  ${p1Hearts}`;
     ctx.fillText(p1Text, HUD_PADDING, HUD_PADDING);
-    p1TextEnd = HUD_PADDING + ctx.measureText(p1Text).width;
-  }
-
-  if (hasWeaponEffect(player1Effects)) {
-    drawMissileIcon(ctx, p1TextEnd + 12, HUD_PADDING + 7);
   }
 
   // Player 2 — top right
-  let p2TextStart = canvasWidth - HUD_PADDING;
   if (player2Name) {
     ctx.font = HUD_FONT;
     ctx.fillStyle = TANK_COLOR_P2;
@@ -274,11 +165,6 @@ export function drawHUD(
     const p2Hearts = '\u2665'.repeat(player2Lives);
     const p2Text = `${p2Hearts}  ${player2Name}`;
     ctx.fillText(p2Text, canvasWidth - HUD_PADDING, HUD_PADDING);
-    p2TextStart = canvasWidth - HUD_PADDING - ctx.measureText(p2Text).width;
-  }
-
-  if (hasWeaponEffect(player2Effects)) {
-    drawMissileIcon(ctx, p2TextStart - 12, HUD_PADDING + 7);
   }
 
   // Bet amount — bottom center

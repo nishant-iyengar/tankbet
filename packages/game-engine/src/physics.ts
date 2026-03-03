@@ -11,12 +11,6 @@ import {
   CORNER_SHIELD_PADDING,
   BULLET_FIRE_COOLDOWN_MS,
   MAX_BULLETS_PER_TANK,
-  MISSILE_SPEED,
-  MISSILE_HOMING_DELAY_S,
-  MISSILE_TURN_SPEED_DEG,
-  MISSILE_WALL_AVOID_RADIUS,
-  MISSILE_WALL_AVOID_STRENGTH,
-  MISSILE_WALL_AVOID_TURN_DEG,
 } from './constants';
 
 export type Vec2 = { x: number; y: number };
@@ -330,23 +324,6 @@ export function collideTankWithEndpoints(tank: TankState, endpoints: Vec2[]): Ta
   return { ...tank, x, y };
 }
 
-// Generic circle vs AABB tank collision. Callers that need a non-BULLET_RADIUS
-// check (e.g. missiles) use this instead of checkBulletTankCollision.
-export function checkCircleTankCollision(
-  x: number,
-  y: number,
-  radius: number,
-  tank: TankState,
-): boolean {
-  const halfW = TANK_WIDTH / 2;
-  const halfH = TANK_HEIGHT / 2;
-  const closestX = Math.max(tank.x - halfW, Math.min(x, tank.x + halfW));
-  const closestY = Math.max(tank.y - halfH, Math.min(y, tank.y + halfH));
-  const dx = x - closestX;
-  const dy = y - closestY;
-  return dx * dx + dy * dy <= radius * radius;
-}
-
 // Reflect bullet off a wall, repositioning it at the hit point + epsilon so it
 // doesn't re-trigger on the next tick.
 export function reflectBulletAtWall(
@@ -396,151 +373,6 @@ export function advanceBullet(
   }
 
   return reflected;
-}
-
-// ---------------------------------------------------------------------------
-// Targeting missile
-// ---------------------------------------------------------------------------
-
-export type MissileState = {
-  id: string;
-  ownerId: string;
-  x: number;
-  y: number;
-  vx: number; // always MISSILE_SPEED magnitude
-  vy: number;
-  age: number;
-  initialTargetId: string; // enemy tank's id for the first MISSILE_HOMING_DELAY_S seconds
-  // homingActive is intentionally omitted — derived as age >= MISSILE_HOMING_DELAY_S wherever needed
-};
-
-export function createMissile(id: string, tank: TankState, enemyId: string): MissileState {
-  const rad = degreesToRadians(tank.angle);
-  const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2; // spawn half a tank length ahead of the tank
-  const tipX = tank.x + Math.cos(rad) * spawnDist;
-  const tipY = tank.y + Math.sin(rad) * spawnDist;
-  return {
-    id,
-    ownerId: tank.id,
-    x: tipX,
-    y: tipY,
-    vx: Math.cos(rad) * MISSILE_SPEED,
-    vy: Math.sin(rad) * MISSILE_SPEED,
-    age: 0,
-    initialTargetId: enemyId,
-  };
-}
-
-// Returns the closest point on segment (ax,ay)→(bx,by) to point (px,py).
-function closestPointOnSegment(
-  px: number, py: number,
-  ax: number, ay: number,
-  bx: number, by: number,
-): { x: number; y: number } {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return { x: ax, y: ay };
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
-  return { x: ax + t * dx, y: ay + t * dy };
-}
-
-// Steer the missile toward its target (dumb, 90°/s) while smartly avoiding walls
-// (potential-field repulsion, up to 300°/s when walls are close).
-// Missiles do NOT bounce — wall contact is handled by the caller (destroy on crossing).
-export function updateMissile(
-  missile: MissileState,
-  tanks: TankState[],
-  walls: WallSegment[],
-  dt: number,
-): MissileState {
-  const newAge = missile.age + dt;
-
-  // --- Determine homing target ---
-  let targetTank: TankState | undefined;
-  if (newAge < MISSILE_HOMING_DELAY_S) {
-    targetTank = tanks.find((t) => t.id === missile.initialTargetId);
-  } else {
-    let minDistSq = Infinity;
-    for (const t of tanks) {
-      const dx = t.x - missile.x;
-      const dy = t.y - missile.y;
-      const distSq = dx * dx + dy * dy;
-      if (distSq < minDistSq) {
-        minDistSq = distSq;
-        targetTank = t;
-      }
-    }
-  }
-
-  // --- Line-of-sight check: only home when no wall blocks the path to the target ---
-  let hasLineOfSight = true;
-  if (targetTank) {
-    for (const wall of walls) {
-      const { crossed } = bulletCrossesWall(missile.x, missile.y, targetTank.x, targetTank.y, wall);
-      if (crossed) {
-        hasLineOfSight = false;
-        break;
-      }
-    }
-  }
-
-  // --- Homing vector (normalized, zero if no target or no line of sight) ---
-  let homingX = 0;
-  let homingY = 0;
-  if (targetTank && hasLineOfSight) {
-    const dx = targetTank.x - missile.x;
-    const dy = targetTank.y - missile.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0) { homingX = dx / dist; homingY = dy / dist; }
-  }
-
-  // --- Wall avoidance: potential-field repulsion from nearby wall segments ---
-  let avoidX = 0;
-  let avoidY = 0;
-  let maxRepulsion = 0; // [0, 1] — how urgently walls need avoiding right now
-  for (const wall of walls) {
-    const cp = closestPointOnSegment(missile.x, missile.y, wall.x1, wall.y1, wall.x2, wall.y2);
-    const dx = missile.x - cp.x;
-    const dy = missile.y - cp.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < MISSILE_WALL_AVOID_RADIUS && dist > 0) {
-      const t = 1 - dist / MISSILE_WALL_AVOID_RADIUS;
-      const weight = t * t; // quadratic falloff
-      avoidX += (dx / dist) * weight;
-      avoidY += (dy / dist) * weight;
-      if (weight > maxRepulsion) maxRepulsion = weight;
-    }
-  }
-
-  // --- Blend homing + avoidance into a desired direction ---
-  const currentAngleDeg = radiansToDegrees(Math.atan2(missile.vy, missile.vx));
-  const blendX = homingX + avoidX * MISSILE_WALL_AVOID_STRENGTH;
-  const blendY = homingY + avoidY * MISSILE_WALL_AVOID_STRENGTH;
-  let desiredAngleDeg = currentAngleDeg;
-  if (blendX !== 0 || blendY !== 0) {
-    desiredAngleDeg = radiansToDegrees(Math.atan2(blendY, blendX));
-  }
-
-  // --- Turn rate: scales from dumb (90°/s) up to fast (300°/s) near walls ---
-  const effectiveTurnRate =
-    MISSILE_TURN_SPEED_DEG +
-    (MISSILE_WALL_AVOID_TURN_DEG - MISSILE_TURN_SPEED_DEG) * maxRepulsion;
-  const maxTurnDeg = effectiveTurnRate * dt;
-  let delta = shortestAngleDelta(desiredAngleDeg, currentAngleDeg);
-  if (Math.abs(delta) > maxTurnDeg) delta = Math.sign(delta) * maxTurnDeg;
-
-  const newAngleDeg = currentAngleDeg + delta;
-  const newRad = degreesToRadians(newAngleDeg);
-
-  return {
-    ...missile,
-    x: missile.x + Math.cos(newRad) * MISSILE_SPEED * dt,
-    y: missile.y + Math.sin(newRad) * MISSILE_SPEED * dt,
-    vx: Math.cos(newRad) * MISSILE_SPEED,
-    vy: Math.sin(newRad) * MISSILE_SPEED,
-    age: newAge,
-  };
 }
 
 // Returns the shortest signed rotation from `from` to `to`, in [-180, 180].
