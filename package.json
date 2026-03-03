@@ -10,10 +10,12 @@
     "db:push": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma db push",
     "db:migrate": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma migrate dev",
     "db:seed": "dotenv -e .env -- pnpm --filter @tankbet/backend exec prisma db seed",
+    "test": "vitest run",
     "test:game": "open http://localhost:5173/dev/game"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
-    "turbo": "^2.3.0"
+    "turbo": "^2.3.0",
+    "vitest": "^4.0.18"
   }
 }

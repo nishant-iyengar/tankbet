@@ -12,7 +12,13 @@
     "./utils": "./src/utils.ts",
     "./username": "./src/username.ts"
   },
+  "scripts": {
+    "test": "vitest run"
+  },
   "dependencies": {
     "@tankbet/game-engine": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
   }
 }
