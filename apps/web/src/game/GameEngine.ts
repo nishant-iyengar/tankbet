@@ -35,10 +35,10 @@ interface TankSnapshot {
   speed: number;
 }
 
-// Interpolation buffer delay — render this far in the past.
-// At 60Hz patches (~17ms intervals), buffer ~3 ticks = 50ms. This ensures
-// we always have two snapshots to lerp between, even if one packet is late.
-const INTERP_DELAY_MS = 50;
+// Default interpolation buffer delay — render this far in the past.
+// At 60Hz patches (~17ms intervals), 100ms ≈ 6 ticks of buffer. Absorbs
+// typical internet jitter while adding imperceptible latency for a tank game.
+const DEFAULT_INTERP_DELAY_MS = 100;
 const MAX_SNAPSHOTS = 8;
 
 interface TankInterpolationState {
@@ -144,6 +144,9 @@ export class GameEngine {
   // userId → sessionId mapping (for looking up visual tank position by ownerId)
   private userIdToSessionId = new Map<string, string>();
 
+  // Interpolation buffer delay (ms) — configurable per instance
+  private interpDelayMs = DEFAULT_INTERP_DELAY_MS;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -205,7 +208,7 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     room.onMessage('bullet:fire', (data: BulletFireEvent) => {
       // Spawn the bullet at the visual tank's barrel tip, not the server
-      // position. The tank is rendered INTERP_DELAY_MS in the past, so the
+      // position. The tank is rendered interpDelayMs in the past, so the
       // server position is ahead of what the player sees. Spawning at the
       // visual barrel tip looks correct.
       let spawnX = data.x;
@@ -528,7 +531,7 @@ export class GameEngine {
   private interpDiagMisses = 0;
 
   private interpolateTanks(): void {
-    const renderTime = performance.now() - INTERP_DELAY_MS;
+    const renderTime = performance.now() - this.interpDelayMs;
 
     this.tankStates.forEach((state) => {
       const snaps = state.snapshots;
@@ -670,6 +673,10 @@ export class GameEngine {
 
   setMazeSegments(segments: LineSegment[]): void {
     this.mazeSegments = segments;
+  }
+
+  setInterpDelay(ms: number): void {
+    this.interpDelayMs = ms;
   }
 
   forfeit(): void {
