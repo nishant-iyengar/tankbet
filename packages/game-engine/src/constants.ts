@@ -46,4 +46,4 @@ export const TRACK_LIFETIME_MS = 2000;       // tank tracks visible for 2 second
 export const TRACK_SPACING = 8;              // px — minimum distance between track marks
 export const BULLET_FIRE_COOLDOWN_MS = 200; // min ms between shots per tank
 export const BULLET_CORRECTION_INTERVAL_TICKS = 30; // server sends position corrections every 30 ticks (300ms at 100Hz)
-export const BULLET_CORRECTION_BLEND_RATE = 0.15; // fraction of error corrected per physics step (smooth convergence)
+export const BULLET_CORRECTION_BLEND_RATE = 0.3; // fraction of error corrected per frame (faster convergence, ~130ms)
