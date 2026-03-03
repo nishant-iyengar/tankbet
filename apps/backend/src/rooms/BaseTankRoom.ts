@@ -159,22 +159,25 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const canFire = canFireBullet(now, lastFired, bulletCount);
 
       if (input.fire && canFire) {
-        this.lastFiredAt.set(sessionId, now);
         this.bulletIdCounter++;
-        const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState);
+        const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState, this.wallSegments);
 
-        const schemaBullet = new Bullet();
-        schemaBullet.x = bulletState.x;
-        schemaBullet.y = bulletState.y;
-        schemaBullet.ownerId = bulletState.ownerId;
-        this.state.bullets.set(bulletState.id, schemaBullet);
+        if (bulletState) {
+          this.lastFiredAt.set(sessionId, now);
 
-        // Store velocity/age in the internal map for physics simulation
-        this.bulletPhysics.set(bulletState.id, {
-          vx: bulletState.vx,
-          vy: bulletState.vy,
-          age: bulletState.age,
-        });
+          const schemaBullet = new Bullet();
+          schemaBullet.x = bulletState.x;
+          schemaBullet.y = bulletState.y;
+          schemaBullet.ownerId = bulletState.ownerId;
+          this.state.bullets.set(bulletState.id, schemaBullet);
+
+          // Store velocity/age in the internal map for physics simulation
+          this.bulletPhysics.set(bulletState.id, {
+            vx: bulletState.vx,
+            vy: bulletState.vy,
+            age: bulletState.age,
+          });
+        }
       }
 
       const updated = updateTank(tankState, { ...input, fire: false }, dt);
@@ -216,7 +219,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       this.state.tanks.forEach((tank, sessionId) => {
         if (hitTank || !tank.alive) return;
         const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
-        if (checkBulletTankCollision(advanced, ts)) {
+        if (checkBulletTankCollision(advanced, ts, this.wallSegments)) {
           hitTank = true;
           bulletsToRemove.push(bulletId);
           this.onBulletHitTank(sessionId);
