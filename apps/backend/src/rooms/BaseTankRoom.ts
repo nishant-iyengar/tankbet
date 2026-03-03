@@ -43,6 +43,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
   protected spawnPositions: [Vec2, Vec2] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   protected lastFiredAt = new Map<string, number>();
+  // Local tick counter — not synced to clients (saves bandwidth vs schema field)
+  protected serverTick = 0;
   // Event-driven bullets — full physics state stored server-side, events broadcast to clients
   protected bullets: BulletState[] = [];
 
@@ -137,9 +139,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     const dt = 1 / SERVER_TICK_HZ;
     if (this.state.phase !== 'playing') return;
 
-    this.state.serverTick++;
+    this.serverTick++;
 
-    // 1. Process pending inputs → move tanks + fire
+    // 1. Process pending inputs → move tanks first, then fire.
+    // Moving before firing ensures the bullet spawns from the barrel's
+    // current position, not where it was last tick.
     this.state.tanks.forEach((tank, sessionId) => {
       if (!tank.alive) return;
 
@@ -148,13 +152,22 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
       const input = pending.keys;
 
-      const tankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
+      const prevTankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
 
-      // Handle firing
+      // Move the tank first
+      const updated = updateTank(prevTankState, { ...input, fire: false }, dt);
+      const clamped = clampTankToMaze(updated, this.mazeWidth, this.mazeHeight);
+      const { tank: collided } = collideTankWithWalls(clamped, prevTankState, this.wallSegments);
+      const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
+      tank.x = shielded.x;
+      tank.y = shielded.y;
+      tank.angle = shielded.angle;
+      tank.speed = updated.speed;
+
+      // Fire from the updated position
       const now = Date.now();
       const lastFired = this.lastFiredAt.get(sessionId) ?? 0;
 
-      // Count bullets owned by this tank
       let bulletCount = 0;
       for (const b of this.bullets) {
         if (b.ownerId === tank.id) bulletCount++;
@@ -164,7 +177,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
       if (input.fire && canFire) {
         this.bulletIdCounter++;
-        const bulletState = createBullet(`b-${this.bulletIdCounter}`, tankState, this.wallSegments);
+        const movedTankState: TankState = { id: tank.id, x: shielded.x, y: shielded.y, angle: shielded.angle, speed: updated.speed };
+        const bulletState = createBullet(`b-${this.bulletIdCounter}`, movedTankState, this.wallSegments);
 
         if (bulletState) {
           this.lastFiredAt.set(sessionId, now);
@@ -179,15 +193,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
           });
         }
       }
-
-      const updated = updateTank(tankState, { ...input, fire: false }, dt);
-      const clamped = clampTankToMaze(updated, this.mazeWidth, this.mazeHeight);
-      const { tank: collided } = collideTankWithWalls(clamped, tankState, this.wallSegments);
-      const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
-      tank.x = shielded.x;
-      tank.y = shielded.y;
-      tank.angle = shielded.angle;
-      tank.speed = updated.speed;
     });
 
     // 2. Advance bullets (event-driven)
@@ -244,7 +249,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     }
 
     // Periodically send authoritative bullet positions so clients can correct drift
-    if (this.bullets.length > 0 && this.state.serverTick % BULLET_CORRECTION_INTERVAL_TICKS === 0) {
+    if (this.bullets.length > 0 && this.serverTick % BULLET_CORRECTION_INTERVAL_TICKS === 0) {
       this.broadcast('bullet:corrections', this.bullets.map((b) => ({
         id: b.id,
         x: b.x,
@@ -254,7 +259,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       })));
     }
 
-    // Patches are sent automatically by Colyseus at patchRate (20Hz).
+    // Patches are sent automatically by Colyseus at patchRate (~60Hz / 17ms).
     // No manual broadcastPatch() needed — Colyseus accumulates changes.
   }
 }

@@ -55,19 +55,23 @@ export function drawTank(ctx: CanvasRenderingContext2D, tank: TankState, color: 
 }
 
 export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState): void {
-  ctx.save();
-
   // Fade out in the last BULLET_FADE_SECONDS of lifetime
   const fadeStart = BULLET_LIFETIME_SECONDS - BULLET_FADE_SECONDS;
-  if (bullet.age > fadeStart) {
+  const needsFade = bullet.age > fadeStart;
+
+  if (needsFade) {
+    ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - (bullet.age - fadeStart) / BULLET_FADE_SECONDS);
   }
 
   ctx.fillStyle = BULLET_COLOR;
   ctx.beginPath();
-  ctx.arc(Math.round(bullet.x), Math.round(bullet.y), BULLET_RADIUS, 0, Math.PI * 2);
+  ctx.arc(bullet.x | 0, bullet.y | 0, BULLET_RADIUS, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();
+
+  if (needsFade) {
+    ctx.restore();
+  }
 }
 
 export interface TrackMark {
@@ -82,29 +86,44 @@ const TRACK_WIDTH = 6;   // distance between the two tread marks (from center)
 const TRACK_DOT_SIZE = 2; // radius of each tread dot
 
 export function drawTracks(ctx: CanvasRenderingContext2D, tracks: TrackMark[], now: number, lifetimeMs: number): void {
+  if (tracks.length === 0) return;
+
+  // Group tracks by color to minimize fillStyle changes
+  const byColor = new Map<string, TrackMark[]>();
   for (const track of tracks) {
     const age = now - track.time;
-    const alpha = Math.max(0, 1 - age / lifetimeMs) * 0.35;
-    if (alpha <= 0) continue;
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = track.color;
-
-    // Two tread marks perpendicular to the tank's heading
-    const perpX = -Math.sin(track.angle) * TRACK_WIDTH;
-    const perpY = Math.cos(track.angle) * TRACK_WIDTH;
-
-    ctx.beginPath();
-    ctx.arc(Math.round(track.x + perpX), Math.round(track.y + perpY), TRACK_DOT_SIZE, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(Math.round(track.x - perpX), Math.round(track.y - perpY), TRACK_DOT_SIZE, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
+    if (age >= lifetimeMs) continue;
+    let group = byColor.get(track.color);
+    if (!group) {
+      group = [];
+      byColor.set(track.color, group);
+    }
+    group.push(track);
   }
+
+  ctx.save();
+  byColor.forEach((group, color) => {
+    ctx.fillStyle = color;
+    for (const track of group) {
+      const age = now - track.time;
+      const alpha = Math.max(0, 1 - age / lifetimeMs) * 0.35;
+      if (alpha <= 0) continue;
+
+      ctx.globalAlpha = alpha;
+
+      const perpX = -Math.sin(track.angle) * TRACK_WIDTH;
+      const perpY = Math.cos(track.angle) * TRACK_WIDTH;
+
+      ctx.beginPath();
+      ctx.arc((track.x + perpX) | 0, (track.y + perpY) | 0, TRACK_DOT_SIZE, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc((track.x - perpX) | 0, (track.y - perpY) | 0, TRACK_DOT_SIZE, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  ctx.restore();
 }
 
 export function drawCountdown(

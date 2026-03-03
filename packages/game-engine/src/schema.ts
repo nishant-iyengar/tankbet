@@ -27,7 +27,6 @@ export const TankRoomState = schema({
   winnerId:      { type: 'string', default: '' },
   roundWinnerId: { type: 'string', default: '' }, // userId of round winner, '' = tie
   lives:         { map: 'int8' },
-  serverTick:    { type: 'uint32', default: 0 },
 }, 'TankRoomState');
 export interface TankRoomState {
   tanks:         MapSchema<Tank>;
@@ -36,5 +35,4 @@ export interface TankRoomState {
   winnerId:      string;
   roundWinnerId: string;
   lives:         MapSchema<number>;
-  serverTick:    number;
 }

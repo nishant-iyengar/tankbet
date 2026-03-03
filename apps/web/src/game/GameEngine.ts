@@ -159,7 +159,7 @@ export class GameEngine {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('Failed to get 2d context');
     this.ctx = ctx;
     this.inputHandler = new InputHandler();
@@ -313,8 +313,8 @@ export class GameEngine {
         const errorX = sx - bullet.x;
         const errorY = sy - bullet.y;
 
-        // Only apply correction if error is significant (> 2px)
-        if (errorX * errorX + errorY * errorY > 4) {
+        // Only apply correction if error is significant (> 1px)
+        if (errorX * errorX + errorY * errorY > 1) {
           // Save where the client currently is (visually)
           const existingOffset = this.bulletOffsets.get(c.id);
           const oldVisualX = bullet.x + (existingOffset?.dx ?? 0);
@@ -483,6 +483,12 @@ export class GameEngine {
 
   private advanceProjectiles(frameDt: number): void {
     this.physicsAccumulator += frameDt;
+
+    // Spiral-of-death clamp: if the tab was backgrounded and comes back,
+    // don't try to simulate hundreds of physics steps — just drop them.
+    if (this.physicsAccumulator > 0.2) {
+      this.physicsAccumulator = 0.2;
+    }
 
     while (this.physicsAccumulator >= PHYSICS_STEP) {
       this.physicsAccumulator -= PHYSICS_STEP;
