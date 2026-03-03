@@ -1,13 +1,18 @@
 import type { Room } from '@colyseus/sdk';
 import { getStateCallbacks } from '@colyseus/sdk';
 import type { Client } from '@colyseus/sdk';
-import type { InputState, TankState, BulletState } from '@tankbet/game-engine/physics';
+import type { InputState, TankState, BulletState, Vec2 } from '@tankbet/game-engine/physics';
 import {
   shortestAngleDelta,
   advanceBullet,
+  updateTank,
+  clampTankToMaze,
+  collideTankWithWalls,
+  collideTankWithEndpoints,
+  extractWallEndpoints,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
-import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE } from '@tankbet/game-engine/constants';
+import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE, MAZE_COLS, MAZE_ROWS, CELL_SIZE } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -132,6 +137,15 @@ export class GameEngine {
   // Track session ID insertion order for color assignment
   private tankSessionOrder: string[] = [];
 
+  // Client-side prediction for local tank
+  private localPredictedTank: TankState | null = null;
+  private localTankOffset: { dx: number; dy: number; dAngle: number } | null = null;
+  private currentInputState: InputState = { up: false, down: false, left: false, right: false, fire: false };
+  private tankPhysicsAccumulator = 0;
+  private wallEndpoints: Vec2[] = [];
+  private mazeWidth = 0;
+  private mazeHeight = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -186,6 +200,9 @@ export class GameEngine {
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
+      this.wallEndpoints = extractWallEndpoints(data.segments);
+      this.mazeWidth = MAZE_COLS * CELL_SIZE;
+      this.mazeHeight = MAZE_ROWS * CELL_SIZE;
     });
 
     // -----------------------------------------------------------------------
@@ -330,7 +347,22 @@ export class GameEngine {
         this.tankSessionOrder.push(sessionId);
       }
 
-      // All tanks (local + remote) use the same interpolation path
+      const isLocal = sessionId === this.localSessionId;
+
+      if (isLocal) {
+        // Initialize client-side prediction state for local tank
+        this.localPredictedTank = {
+          id: sessionId,
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+        };
+        this.localTankOffset = null;
+        this.tankPhysicsAccumulator = 0;
+      }
+
+      // Remote tanks use interpolation; local tank entry is kept for color/alive tracking
       this.remoteTanks.set(sessionId, {
         x: tank.x,
         y: tank.y,
@@ -362,40 +394,83 @@ export class GameEngine {
         const isRespawn = wasAlive === false && tank.alive;
         this.tankAliveState.set(sessionId, tank.alive);
 
-        // Update interpolation targets (same path for local + remote)
-        const remote = this.remoteTanks.get(sessionId);
-        if (remote) {
+        if (isLocal) {
+          // --- Client-side prediction path for local tank ---
+          const predicted = this.localPredictedTank;
+          if (!predicted) return;
+
           if (isRespawn) {
-            // Snap directly to respawn position — no lerp from death location
-            remote.x = tank.x;
-            remote.y = tank.y;
-            remote.angle = tank.angle;
-            remote.speed = tank.speed;
-            remote.prevX = tank.x;
-            remote.prevY = tank.y;
-            remote.prevAngle = tank.angle;
-            remote.targetX = tank.x;
-            remote.targetY = tank.y;
-            remote.targetAngle = tank.angle;
-            remote.targetSpeed = tank.speed;
-            remote.lastUpdateTime = performance.now();
-          } else {
-            const now = performance.now();
-            const elapsed = now - remote.lastUpdateTime;
-            // Adaptive update interval (EMA)
-            if (elapsed > 0 && elapsed < 200) {
-              remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+            // Snap prediction to respawn position
+            predicted.x = tank.x;
+            predicted.y = tank.y;
+            predicted.angle = tank.angle;
+            predicted.speed = tank.speed;
+            this.localTankOffset = null;
+            this.tankPhysicsAccumulator = 0;
+            return;
+          }
+
+          // Compare server position to our predicted position
+          const errorX = tank.x - predicted.x;
+          const errorY = tank.y - predicted.y;
+          const errorSq = errorX * errorX + errorY * errorY;
+
+          if (errorSq > 4) {
+            // Error > 2px: snap prediction to server, preserve visual continuity via offset
+            const existingOffset = this.localTankOffset;
+            const oldVisualX = predicted.x + (existingOffset?.dx ?? 0);
+            const oldVisualY = predicted.y + (existingOffset?.dy ?? 0);
+            const oldVisualAngle = predicted.angle + (existingOffset?.dAngle ?? 0);
+
+            predicted.x = tank.x;
+            predicted.y = tank.y;
+
+            this.localTankOffset = {
+              dx: oldVisualX - tank.x,
+              dy: oldVisualY - tank.y,
+              dAngle: oldVisualAngle - tank.angle,
+            };
+          }
+
+          // Always sync angle and speed from server to prevent drift
+          predicted.angle = tank.angle;
+          predicted.speed = tank.speed;
+        } else {
+          // --- Interpolation path for remote tanks ---
+          const remote = this.remoteTanks.get(sessionId);
+          if (remote) {
+            if (isRespawn) {
+              // Snap directly to respawn position — no lerp from death location
+              remote.x = tank.x;
+              remote.y = tank.y;
+              remote.angle = tank.angle;
+              remote.speed = tank.speed;
+              remote.prevX = tank.x;
+              remote.prevY = tank.y;
+              remote.prevAngle = tank.angle;
+              remote.targetX = tank.x;
+              remote.targetY = tank.y;
+              remote.targetAngle = tank.angle;
+              remote.targetSpeed = tank.speed;
+              remote.lastUpdateTime = performance.now();
+            } else {
+              const now = performance.now();
+              const elapsed = now - remote.lastUpdateTime;
+              // Adaptive update interval (EMA)
+              if (elapsed > 0 && elapsed < 200) {
+                remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
+              }
+              // Use current visual position as interpolation start (fixes snap-back)
+              remote.prevX = remote.x;
+              remote.prevY = remote.y;
+              remote.prevAngle = remote.angle;
+              // Set new target
+              remote.targetX = tank.x;
+              remote.targetY = tank.y;
+              remote.targetAngle = tank.angle;
+              remote.targetSpeed = tank.speed;
+              remote.lastUpdateTime = now;
             }
-            // Shift previous target to prev
-            remote.prevX = remote.targetX;
-            remote.prevY = remote.targetY;
-            remote.prevAngle = remote.targetAngle;
-            // Set new target
-            remote.targetX = tank.x;
-            remote.targetY = tank.y;
-            remote.targetAngle = tank.angle;
-            remote.targetSpeed = tank.speed;
-            remote.lastUpdateTime = now;
           }
         }
       });
@@ -404,6 +479,10 @@ export class GameEngine {
     $.tanks.onRemove((_tank, sessionId) => {
       this.remoteTanks.delete(sessionId);
       this.tankAliveState.delete(sessionId);
+      if (sessionId === this.localSessionId) {
+        this.localPredictedTank = null;
+        this.localTankOffset = null;
+      }
     });
 
     // -----------------------------------------------------------------------
@@ -447,6 +526,7 @@ export class GameEngine {
     // Input handler — sends to server on key state changes only
     // -----------------------------------------------------------------------
     this.inputHandler.attach(this.playerIndex, (keys: InputState) => {
+      this.currentInputState = { ...keys };
       this.room?.send('input', { keys });
     });
 
@@ -507,12 +587,75 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Interpolate remote tanks
+  // Advance local tank client-side (fixed timestep prediction)
+  // -------------------------------------------------------------------------
+
+  private advanceLocalTank(frameDt: number): void {
+    const predicted = this.localPredictedTank;
+    if (!predicted) return;
+
+    // Don't predict while dead
+    const alive = this.tankAliveState.get(this.localSessionId);
+    if (!alive) return;
+
+    this.tankPhysicsAccumulator += frameDt;
+
+    while (this.tankPhysicsAccumulator >= PHYSICS_STEP) {
+      this.tankPhysicsAccumulator -= PHYSICS_STEP;
+
+      const prevTank = { ...predicted };
+      const moved = updateTank(predicted, this.currentInputState, PHYSICS_STEP);
+      predicted.x = moved.x;
+      predicted.y = moved.y;
+      predicted.angle = moved.angle;
+      predicted.speed = moved.speed;
+
+      // Clamp to maze bounds
+      if (this.mazeWidth > 0) {
+        const clamped = clampTankToMaze(predicted, this.mazeWidth, this.mazeHeight);
+        predicted.x = clamped.x;
+        predicted.y = clamped.y;
+      }
+
+      // Collide with walls
+      if (this.mazeSegments.length > 0) {
+        const result = collideTankWithWalls(predicted, prevTank, this.mazeSegments);
+        predicted.x = result.tank.x;
+        predicted.y = result.tank.y;
+      }
+
+      // Collide with wall endpoints (corner shield)
+      if (this.wallEndpoints.length > 0) {
+        const endpointResult = collideTankWithEndpoints(predicted, this.wallEndpoints);
+        predicted.x = endpointResult.x;
+        predicted.y = endpointResult.y;
+      }
+    }
+
+    // Decay visual correction offset
+    if (this.localTankOffset) {
+      const decay = 1 - BULLET_CORRECTION_BLEND_RATE;
+      this.localTankOffset.dx *= decay;
+      this.localTankOffset.dy *= decay;
+      this.localTankOffset.dAngle *= decay;
+      // Clear once sub-pixel
+      if (this.localTankOffset.dx * this.localTankOffset.dx +
+          this.localTankOffset.dy * this.localTankOffset.dy < 0.25) {
+        this.localTankOffset = null;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Interpolate remote tanks (skip local — it uses prediction)
   // -------------------------------------------------------------------------
 
   private interpolateRemoteTanks(): void {
     const now = performance.now();
-    this.remoteTanks.forEach((remote) => {
+    this.remoteTanks.forEach((remote, sessionId) => {
+      // Skip local tank — rendered via client-side prediction
+      if (sessionId === this.localSessionId) return;
+
       const elapsed = now - remote.lastUpdateTime;
       const t = Math.min(elapsed / remote.updateInterval, 1.5);
 
@@ -557,10 +700,11 @@ export class GameEngine {
     this.lastFrameTime = perfNow;
     this.advanceProjectiles(frameDt);
 
-    // Interpolate all tanks (local + remote)
+    // Advance local tank prediction + interpolate remote tanks
+    this.advanceLocalTank(frameDt);
     this.interpolateRemoteTanks();
 
-    // Draw all tanks uniformly
+    // Draw all tanks
     const tankColors = ['#4ade80', '#f87171'];
 
     this.remoteTanks.forEach((remote, sessionId) => {
@@ -568,8 +712,24 @@ export class GameEngine {
       if (!alive) return;
       const orderIdx = this.tankSessionOrder.indexOf(sessionId);
       const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
-      const ts: TankState = { id: sessionId, x: remote.x, y: remote.y, angle: remote.angle, speed: remote.speed };
-      drawTank(this.ctx, ts, color);
+
+      if (sessionId === this.localSessionId && this.localPredictedTank) {
+        // Local tank: render from prediction + visual offset
+        const predicted = this.localPredictedTank;
+        const offset = this.localTankOffset;
+        const ts: TankState = {
+          id: sessionId,
+          x: predicted.x + (offset?.dx ?? 0),
+          y: predicted.y + (offset?.dy ?? 0),
+          angle: predicted.angle + (offset?.dAngle ?? 0),
+          speed: predicted.speed,
+        };
+        drawTank(this.ctx, ts, color);
+      } else {
+        // Remote tank: render from interpolation
+        const ts: TankState = { id: sessionId, x: remote.x, y: remote.y, angle: remote.angle, speed: remote.speed };
+        drawTank(this.ctx, ts, color);
+      }
     });
 
     // Draw bullets from client-side simulation, applying visual correction offsets
