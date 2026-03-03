@@ -19,6 +19,8 @@ interface GameData {
   status: string;
   colyseusRoomId: string | null;
   betAmountCents: number;
+  winnerId: string | null;
+  loserId: string | null;
   creator: { id: string; username: string };
   opponent: { id: string; username: string } | null;
   creatorCharity: CharityData | null;
@@ -181,6 +183,15 @@ export function GamePage(): React.JSX.Element {
 
         setGameData(game);
 
+        // Show static results for completed games (e.g. revisiting a game URL)
+        if (game.status === 'COMPLETED' && game.winnerId && game.opponent) {
+          setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
+          setWinnerId(game.winnerId);
+          setPhase('ended');
+          connectingRef.current = false;
+          return;
+        }
+
         if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent || !seatReservation) {
           connectingRef.current = false;
           setError('Game is not available');
@@ -215,7 +226,6 @@ export function GamePage(): React.JSX.Element {
         );
 
         engineRef.current = engine;
-        setPhase('playing');
       } catch (err) {
         connectingRef.current = false;
         setError(err instanceof Error ? err.message : 'Failed to connect');

@@ -3,10 +3,7 @@ import { prisma } from '../prisma';
 import { matchMaker } from '@colyseus/core';
 import crypto from 'node:crypto';
 import { logger } from '../logger';
-
-// Track pending reservations per (roomId, userId) to handle React StrictMode double-mount.
-const pendingReservations = new Map<string, { sessionId: string; createdAt: number }>();
-const RESERVATION_TTL_MS = 10_000;
+import { requireAuth } from '../middleware/auth';
 
 const DEV_USERS = [
   { clerkId: 'dev-admin-1', phoneNumber: '+10000000001', username: 'fierce-crimson-falcon' },
@@ -60,25 +57,37 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send({ user });
   });
 
-  // POST /api/dev/test-game — creates two test users + a live game + a Colyseus room
-  fastify.post('/test-game', async (_req, reply) => {
-    const [player1, player2] = await Promise.all([
-      prisma.user.upsert({
-        where: { clerkId: 'dev-player-1' },
-        create: { clerkId: 'dev-player-1', username: 'dev-player-1', phoneNumber: '+10000000099', balance: 0 },
-        update: {},
+  // POST /api/dev/test-game — creates a live game + Colyseus room for authenticated dev user
+  interface TestGameBody { opponentClerkId: string }
+  fastify.post<{ Body: TestGameBody }>('/test-game', { preHandler: requireAuth }, async (req, reply) => {
+    const creator = req.dbUser;
+    const { opponentClerkId } = req.body;
+
+    const opponent = await prisma.user.findUnique({ where: { clerkId: opponentClerkId } });
+    if (!opponent) {
+      return reply.status(400).send({ error: 'Opponent not found' });
+    }
+
+    if (creator.id === opponent.id) {
+      return reply.status(400).send({ error: 'Cannot play against yourself' });
+    }
+
+    // Clear stale activeGameId on both players (in case a previous crashed game left state)
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: creator.id },
+        data: { activeGameId: null },
       }),
-      prisma.user.upsert({
-        where: { clerkId: 'dev-player-2' },
-        create: { clerkId: 'dev-player-2', username: 'dev-player-2', phoneNumber: '+10000000098', balance: 0 },
-        update: {},
+      prisma.user.update({
+        where: { id: opponent.id },
+        data: { activeGameId: null },
       }),
     ]);
 
     const game = await prisma.game.create({
       data: {
-        creatorId: player1.id,
-        opponentId: player2.id,
+        creatorId: creator.id,
+        opponentId: opponent.id,
         betAmountCents: 0,
         status: 'IN_PROGRESS',
         startedAt: new Date(),
@@ -89,55 +98,27 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
 
     const room = await matchMaker.createRoom('tank', {
       gameId: game.id,
-      player1Id: player1.id,
-      player2Id: player2.id,
+      player1Id: creator.id,
+      player2Id: opponent.id,
     });
 
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { colyseusRoomId: room.roomId },
-    });
+    await prisma.$transaction([
+      prisma.game.update({
+        where: { id: game.id },
+        data: { colyseusRoomId: room.roomId },
+      }),
+      prisma.user.update({
+        where: { id: creator.id },
+        data: { activeGameId: game.id },
+      }),
+      prisma.user.update({
+        where: { id: opponent.id },
+        data: { activeGameId: game.id },
+      }),
+    ]);
 
-    return reply.send({
-      colyseusRoomId: room.roomId,
-      player1Id: player1.id,
-      player2Id: player2.id,
-    });
-  });
+    logger.info({ gameId: game.id, roomId: room.roomId, creatorId: creator.id, opponentId: opponent.id }, 'dev test game created');
 
-  // POST /api/dev/seat — generate a seat reservation for a dev game room.
-  interface SeatBody { roomId: string; userId: string }
-  fastify.post<{ Body: SeatBody }>('/seat', async (req, reply) => {
-    const { roomId, userId } = req.body;
-
-    const [listing] = await matchMaker.query({ roomId });
-    logger.info({ roomId, userId, listing: listing ? { clients: listing.clients, maxClients: listing.maxClients, locked: listing.locked } : null }, 'seat request');
-    if (!listing) return reply.status(404).send({ error: 'Room not found' });
-
-    const key = `${roomId}:${userId}`;
-    const now = Date.now();
-
-    // Return existing reservation if within TTL (handles React StrictMode double-mount)
-    const existing = pendingReservations.get(key);
-    if (existing && now - existing.createdAt < RESERVATION_TTL_MS) {
-      logger.info({ sessionId: existing.sessionId }, 'returning cached reservation');
-      // Return the flat 0.17 seat reservation format
-      return reply.send({
-        sessionId: existing.sessionId,
-        roomId: listing.roomId,
-        name: listing.name,
-        processId: listing.processId,
-      });
-    }
-
-    try {
-      const reservation = await matchMaker.reserveSeatFor(listing, {}, { userId });
-      logger.info({ sessionId: reservation.sessionId }, 'reserved seat');
-      pendingReservations.set(key, { sessionId: reservation.sessionId, createdAt: now });
-      return reply.send(reservation);
-    } catch (err) {
-      logger.error({ err }, 'reserveSeatFor failed');
-      throw err;
-    }
+    return reply.send({ gameId: game.id });
   });
 }
