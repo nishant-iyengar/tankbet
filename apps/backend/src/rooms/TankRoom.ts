@@ -114,8 +114,11 @@ export class TankRoom extends BaseTankRoom {
       if (tank !== undefined) this.state.tanks.set(client.sessionId, tank);
       if (lives !== undefined) this.state.lives.set(client.sessionId, lives);
 
-      // Re-send maze so the reconnected client can render (bullets auto-sync via schema)
+      // Re-send maze and current bullets so the reconnected client can render
       client.send('maze', { segments: this.wallSegments });
+      if (this.bullets.length > 0) {
+        client.send('bullet:sync', this.bullets);
+      }
       logger.info({ oldSessionId: existingSessionId, newSessionId: client.sessionId }, 'remapped existing player session');
     } else {
       this.spawnPlayer(client, auth.userId);

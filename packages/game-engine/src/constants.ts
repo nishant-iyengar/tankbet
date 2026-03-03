@@ -10,7 +10,7 @@ export const CORNER_SHIELD_PADDING = 4;   // extra px beyond OBB to keep tank aw
 export const TANK_ROTATION_SPEED = 200;   // deg/s
 export const BULLET_SPEED = 250;          // px/s
 export const MAX_BULLETS_PER_TANK = 10;
-export const BULLET_LIFETIME_SECONDS = 7; // time-based; bounces are infinite
+export const BULLET_LIFETIME_SECONDS = 300; // 5 minutes; bounces are infinite
 export const BULLET_RADIUS = 3;
 export const BARREL_WIDTH = 5;            // px — barrel rectangle height in renderer
 export const WALL_LINE_WIDTH = 2;         // px — wall stroke width in renderer
@@ -38,6 +38,7 @@ export const PLEDGE_FEE_RATE = 0.05;
 // Server
 export const LIVES_PER_GAME = 5;
 export const SERVER_TICK_HZ = 100;
-export const SERVER_PATCH_HZ = 60;
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;
 export const BULLET_FIRE_COOLDOWN_MS = 170; // min ms between shots per tank
+export const BULLET_CORRECTION_INTERVAL_TICKS = 50; // server sends position corrections every 50 ticks (500ms at 100Hz)
+export const BULLET_CORRECTION_BLEND_RATE = 0.15; // fraction of error corrected per physics step (smooth convergence)

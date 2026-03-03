@@ -1,11 +1,13 @@
 import type { Room } from '@colyseus/sdk';
 import { getStateCallbacks } from '@colyseus/sdk';
 import type { Client } from '@colyseus/sdk';
-import type { InputState, TankState } from '@tankbet/game-engine/physics';
+import type { InputState, TankState, BulletState } from '@tankbet/game-engine/physics';
 import {
   shortestAngleDelta,
+  advanceBullet,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
+import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -16,7 +18,7 @@ import {
   drawExplosion,
   EXPLOSION_DURATION_MS,
 } from '@tankbet/game-engine/renderer';
-import type { TankRoomState, Bullet } from '@tankbet/game-engine/schema';
+import type { TankRoomState } from '@tankbet/game-engine/schema';
 import { InputHandler } from './InputHandler';
 
 // ---------------------------------------------------------------------------
@@ -39,17 +41,33 @@ interface RemoteTankState {
   updateInterval: number;
 }
 
-// Bullet interpolation state (same pattern as tank interpolation)
-interface RemoteBulletState {
+interface BulletFireEvent {
+  id: string;
+  ownerId: string;
   x: number;
   y: number;
-  ownerId: string;
-  prevX: number;
-  prevY: number;
-  targetX: number;
-  targetY: number;
-  lastUpdateTime: number;
-  updateInterval: number;
+  vx: number;
+  vy: number;
+}
+
+interface BulletBounceEvent {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+interface BulletRemoveEvent {
+  id: string;
+}
+
+interface BulletCorrectionEntry {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
 }
 
 // Flat seat reservation shape from @colyseus/core 0.17 matchMaker.reserveSeatFor
@@ -60,11 +78,6 @@ export interface SeatReservation {
   processId: string;
   publicAddress?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Derived constants
-// ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // GameEngine
@@ -91,10 +104,24 @@ export class GameEngine {
   // Tank interpolation (all tanks, including local)
   private remoteTanks = new Map<string, RemoteTankState>();
 
-  // Bullet interpolation (schema-driven)
-  private remoteBullets = new Map<string, RemoteBulletState>();
+  // Event-driven bullets — client simulates physics between server events
+  private activeBullets = new Map<string, BulletState>();
 
-  // Game state tracking (replaces parseState/stateBuffer)
+  // Visual offsets for smooth server corrections.
+  // When a correction arrives, we compute error = serverPos - clientPos, set it as
+  // the offset, then decay the offset to zero over time. The bullet renders at
+  // physicsPos + offset, so physics is never disturbed.
+  private bulletOffsets = new Map<string, { dx: number; dy: number }>();
+
+  // Fixed-timestep accumulator for bullet physics
+  private lastFrameTime = 0;
+  private physicsAccumulator = 0;
+
+  // Latency tracking for bullet fast-forward on spawn
+  private estimatedOneWayLatencySeconds = 0.025; // initial guess: 25ms
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Game state tracking
   private currentPhase = 'waiting';
   private currentCountdown = 0;
   private currentWinnerId = '';
@@ -138,11 +165,153 @@ export class GameEngine {
     this.localSessionId = room.sessionId;
 
     // -----------------------------------------------------------------------
+    // Latency measurement — smoothed EMA of one-way latency for bullet fast-forward
+    // -----------------------------------------------------------------------
+    this.pingInterval = setInterval(() => {
+      room.ping((rttMs: number) => {
+        const oneWaySeconds = (rttMs / 2) / 1000;
+        // Exponential moving average (smooth out jitter)
+        this.estimatedOneWayLatencySeconds =
+          this.estimatedOneWayLatencySeconds * 0.7 + oneWaySeconds * 0.3;
+      });
+    }, 2000);
+    // Take an initial measurement immediately
+    room.ping((rttMs: number) => {
+      this.estimatedOneWayLatencySeconds = (rttMs / 2) / 1000;
+    });
+
+    // -----------------------------------------------------------------------
     // Maze message
     // -----------------------------------------------------------------------
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
       console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
+    });
+
+    // -----------------------------------------------------------------------
+    // Bullet event handlers (event-driven, not schema)
+    // -----------------------------------------------------------------------
+    room.onMessage('bullet:fire', (data: BulletFireEvent) => {
+      const bullet: BulletState = {
+        id: data.id,
+        ownerId: data.ownerId,
+        x: data.x,
+        y: data.y,
+        vx: data.vx,
+        vy: data.vy,
+        age: 0,
+      };
+
+      // Fast-forward the bullet by estimated one-way latency so the client
+      // starts at approximately where the server bullet currently is.
+      // This eliminates the K-tick offset that causes bounce desync.
+      let remaining = this.estimatedOneWayLatencySeconds;
+      while (remaining >= PHYSICS_STEP) {
+        const advanced = advanceBullet(bullet, PHYSICS_STEP, this.mazeSegments);
+        if (!advanced) return; // bullet expired during fast-forward
+        bullet.x = advanced.x;
+        bullet.y = advanced.y;
+        bullet.vx = advanced.vx;
+        bullet.vy = advanced.vy;
+        bullet.age = advanced.age;
+        remaining -= PHYSICS_STEP;
+      }
+
+      this.activeBullets.set(data.id, bullet);
+    });
+
+    room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
+      const bullet = this.activeBullets.get(data.id);
+      if (bullet) {
+        // The client already runs advanceBullet() which detects and applies
+        // bounces locally. By the time this server event arrives (one RTT later),
+        // the client has already bounced and moved past the bounce point.
+        // Snapping position would jump the bullet BACKWARD.
+        //
+        // Only correct velocity direction if it mismatches (client missed a
+        // bounce or bounced off the wrong wall).
+        if (Math.sign(bullet.vx) !== Math.sign(data.vx) ||
+            Math.sign(bullet.vy) !== Math.sign(data.vy)) {
+          bullet.vx = data.vx;
+          bullet.vy = data.vy;
+        }
+      }
+    });
+
+    room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
+      this.activeBullets.delete(data.id);
+      this.bulletOffsets.delete(data.id);
+    });
+
+    room.onMessage('bullet:clear', () => {
+      this.activeBullets.clear();
+      this.bulletOffsets.clear();
+    });
+
+    room.onMessage('bullet:sync', (bullets: BulletState[]) => {
+      this.activeBullets.clear();
+      this.bulletOffsets.clear();
+      for (const b of bullets) {
+        this.activeBullets.set(b.id, { ...b });
+      }
+    });
+
+    room.onMessage('bullet:corrections', (corrections: BulletCorrectionEntry[]) => {
+      for (const c of corrections) {
+        const bullet = this.activeBullets.get(c.id);
+        if (!bullet) continue;
+
+        // Fast-forward the server position by estimated latency so it
+        // represents where the server bullet is NOW, not where it was
+        // when the message was sent.
+        let sx = c.x;
+        let sy = c.y;
+        let svx = c.vx;
+        let svy = c.vy;
+        let remaining = this.estimatedOneWayLatencySeconds;
+        while (remaining >= PHYSICS_STEP) {
+          const advanced = advanceBullet(
+            { id: c.id, ownerId: '', x: sx, y: sy, vx: svx, vy: svy, age: 0 },
+            PHYSICS_STEP,
+            this.mazeSegments,
+          );
+          if (!advanced) break;
+          sx = advanced.x;
+          sy = advanced.y;
+          svx = advanced.vx;
+          svy = advanced.vy;
+          remaining -= PHYSICS_STEP;
+        }
+
+        const errorX = sx - bullet.x;
+        const errorY = sy - bullet.y;
+
+        // Only apply correction if error is significant (> 2px)
+        if (errorX * errorX + errorY * errorY > 4) {
+          // Save where the client currently is (visually)
+          const existingOffset = this.bulletOffsets.get(c.id);
+          const oldVisualX = bullet.x + (existingOffset?.dx ?? 0);
+          const oldVisualY = bullet.y + (existingOffset?.dy ?? 0);
+
+          // Snap PHYSICS to the server position (future simulation is now accurate)
+          bullet.x = sx;
+          bullet.y = sy;
+
+          // Set visual offset so rendered position stays at oldVisual (no visible jump)
+          // offset decays to zero → visual smoothly migrates to corrected physics
+          this.bulletOffsets.set(c.id, {
+            dx: oldVisualX - sx,
+            dy: oldVisualY - sy,
+          });
+        }
+
+        // Snap velocity if server disagrees (missed/wrong bounce)
+        if (Math.sign(bullet.vx) !== Math.sign(svx) ||
+            Math.sign(bullet.vy) !== Math.sign(svy)) {
+          bullet.vx = svx;
+          bullet.vy = svy;
+        }
+      }
     });
 
     // -----------------------------------------------------------------------
@@ -238,44 +407,6 @@ export class GameEngine {
     });
 
     // -----------------------------------------------------------------------
-    // Bullet schema callbacks
-    // -----------------------------------------------------------------------
-    $.bullets.onAdd((bullet: Bullet, bulletId: string) => {
-      this.remoteBullets.set(bulletId, {
-        x: bullet.x,
-        y: bullet.y,
-        ownerId: bullet.ownerId,
-        prevX: bullet.x,
-        prevY: bullet.y,
-        targetX: bullet.x,
-        targetY: bullet.y,
-        lastUpdateTime: performance.now(),
-        updateInterval: 10,
-      });
-
-      const bulletProxy = getCallbacks(bullet);
-      bulletProxy.onChange(() => {
-        const remote = this.remoteBullets.get(bulletId);
-        if (remote) {
-          const now = performance.now();
-          const elapsed = now - remote.lastUpdateTime;
-          if (elapsed > 0 && elapsed < 200) {
-            remote.updateInterval = remote.updateInterval * 0.7 + elapsed * 0.3;
-          }
-          remote.prevX = remote.targetX;
-          remote.prevY = remote.targetY;
-          remote.targetX = bullet.x;
-          remote.targetY = bullet.y;
-          remote.lastUpdateTime = now;
-        }
-      });
-    });
-
-    $.bullets.onRemove((_bullet: Bullet, bulletId: string) => {
-      this.remoteBullets.delete(bulletId);
-    });
-
-    // -----------------------------------------------------------------------
     // Lives callbacks
     // -----------------------------------------------------------------------
     $.lives.onAdd((value, sessionId) => {
@@ -333,6 +464,49 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Advance bullets client-side (fixed timestep)
+  // -------------------------------------------------------------------------
+
+  private advanceProjectiles(frameDt: number): void {
+    this.physicsAccumulator += frameDt;
+
+    while (this.physicsAccumulator >= PHYSICS_STEP) {
+      this.physicsAccumulator -= PHYSICS_STEP;
+
+      const toRemove: string[] = [];
+      this.activeBullets.forEach((bullet, id) => {
+        const advanced = advanceBullet(bullet, PHYSICS_STEP, this.mazeSegments);
+        if (!advanced) {
+          toRemove.push(id);
+          return;
+        }
+        // Update in-place
+        bullet.x = advanced.x;
+        bullet.y = advanced.y;
+        bullet.vx = advanced.vx;
+        bullet.vy = advanced.vy;
+        bullet.age = advanced.age;
+      });
+
+      for (const id of toRemove) {
+        this.activeBullets.delete(id);
+        this.bulletOffsets.delete(id);
+      }
+    }
+
+    // Decay visual offsets toward zero (runs once per frame, not per physics step)
+    const decay = 1 - BULLET_CORRECTION_BLEND_RATE;
+    this.bulletOffsets.forEach((offset, id) => {
+      offset.dx *= decay;
+      offset.dy *= decay;
+      // Clear once sub-pixel
+      if (offset.dx * offset.dx + offset.dy * offset.dy < 0.25) {
+        this.bulletOffsets.delete(id);
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Interpolate remote tanks
   // -------------------------------------------------------------------------
 
@@ -359,6 +533,7 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private startRenderLoop(): void {
+    this.lastFrameTime = performance.now();
     const render = (): void => {
       this.draw();
       this.animFrameId = requestAnimationFrame(render);
@@ -377,6 +552,11 @@ export class GameEngine {
     const now = Date.now();
     const perfNow = performance.now();
 
+    // Advance bullet physics with fixed timestep
+    const frameDt = Math.min((perfNow - this.lastFrameTime) / 1000, 0.05); // cap at 50ms
+    this.lastFrameTime = perfNow;
+    this.advanceProjectiles(frameDt);
+
     // Interpolate all tanks (local + remote)
     this.interpolateRemoteTanks();
 
@@ -392,13 +572,14 @@ export class GameEngine {
       drawTank(this.ctx, ts, color);
     });
 
-    // Draw bullets with interpolation between schema updates
-    this.remoteBullets.forEach((remote) => {
-      const elapsed = perfNow - remote.lastUpdateTime;
-      const t = Math.min(elapsed / remote.updateInterval, 1.5);
-      const x = remote.prevX + (remote.targetX - remote.prevX) * t;
-      const y = remote.prevY + (remote.targetY - remote.prevY) * t;
-      drawBullet(this.ctx, { id: '', ownerId: remote.ownerId, x, y, vx: 0, vy: 0, age: 0 });
+    // Draw bullets from client-side simulation, applying visual correction offsets
+    this.activeBullets.forEach((bullet) => {
+      const offset = this.bulletOffsets.get(bullet.id);
+      if (offset) {
+        drawBullet(this.ctx, { ...bullet, x: bullet.x + offset.dx, y: bullet.y + offset.dy });
+      } else {
+        drawBullet(this.ctx, bullet);
+      }
     });
 
     // Draw and prune expired explosions
@@ -445,6 +626,10 @@ export class GameEngine {
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
+    }
+    if (this.pingInterval !== null) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
     this.inputHandler.detach();
     void this.room?.leave();

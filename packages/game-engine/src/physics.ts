@@ -396,16 +396,33 @@ export function advanceBullet(
 
   if (updated.age >= BULLET_LIFETIME_SECONDS) return null;
 
-  let reflected = updated;
+  // Check for wall crossing and reflect, carrying remaining distance through
   for (const wall of walls) {
-    const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, reflected.x, reflected.y, wall);
+    const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, updated.x, updated.y, wall);
     if (crossed) {
-      reflected = reflectBulletAtWall(reflected, wall, hitX, hitY);
-      break; // max 1 bounce per tick
+      const reflected = reflectBulletAtWall(updated, wall, hitX, hitY);
+      // Carry remaining travel distance through the reflection.
+      // t is the fraction of the path consumed reaching the wall.
+      const dx = updated.x - prevX;
+      const dy = updated.y - prevY;
+      const totalDist = Math.sqrt(dx * dx + dy * dy);
+      if (totalDist > 0.001) {
+        const hitDx = hitX - prevX;
+        const hitDy = hitY - prevY;
+        const hitDist = Math.sqrt(hitDx * hitDx + hitDy * hitDy);
+        const remainDist = totalDist - hitDist;
+        // Move in the reflected direction for the remaining distance
+        const speed = Math.sqrt(reflected.vx * reflected.vx + reflected.vy * reflected.vy);
+        if (speed > 0) {
+          reflected.x += (reflected.vx / speed) * remainDist;
+          reflected.y += (reflected.vy / speed) * remainDist;
+        }
+      }
+      return reflected;
     }
   }
 
-  return reflected;
+  return updated;
 }
 
 // Returns the shortest signed rotation from `from` to `to`, in [-180, 180].

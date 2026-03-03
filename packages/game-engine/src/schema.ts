@@ -1,17 +1,6 @@
 import { schema, MapSchema } from '@colyseus/schema';
 import { GAME_START_COUNTDOWN_SECONDS } from './constants.js';
 
-export const Bullet = schema({
-  x:       { type: 'float32', default: 0 },
-  y:       { type: 'float32', default: 0 },
-  ownerId: { type: 'string',  default: '' },
-}, 'Bullet');
-export interface Bullet {
-  x: number;
-  y: number;
-  ownerId: string;
-}
-
 export const Tank = schema({
   id:         { type: 'string',  default: '' },
   x:          { type: 'float32', default: 0 },
@@ -33,7 +22,6 @@ export type GamePhase = 'waiting' | 'countdown' | 'playing' | 'resolving' | 'end
 
 export const TankRoomState = schema({
   tanks:         { map: Tank },
-  bullets:       { map: Bullet },
   countdown:     { type: 'int8',   default: GAME_START_COUNTDOWN_SECONDS },
   phase:         { type: 'string', default: 'waiting' },
   winnerId:      { type: 'string', default: '' },
@@ -43,7 +31,6 @@ export const TankRoomState = schema({
 }, 'TankRoomState');
 export interface TankRoomState {
   tanks:         MapSchema<Tank>;
-  bullets:       MapSchema<Bullet>;
   countdown:     number;
   phase:         string;
   winnerId:      string;
