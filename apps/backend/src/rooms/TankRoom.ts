@@ -209,9 +209,9 @@ export class TankRoom extends BaseTankRoom {
     this.state.phase = 'ended';
     this.state.winnerId = winnerId;
 
-    // patchRate is null (manual patching), and tick() returns early when
-    // phase !== 'playing'. Broadcast immediately so the remaining connected
-    // client receives the game-end state change.
+    // tick() returns early when phase !== 'playing', so the next automatic
+    // patchRate interval may not send changes. Broadcast immediately so clients
+    // receive the game-end state change without delay.
     this.broadcastPatch();
 
     const game = await prisma.game.findUnique({

@@ -34,9 +34,11 @@ interface TankSnapshot {
   speed: number;
 }
 
-// 2-tick interpolation buffer delay (20ms at 100Hz)
-const INTERP_DELAY_MS = 20;
-const MAX_SNAPSHOTS = 10;
+// Interpolation buffer delay — render this far in the past.
+// At 20Hz patches (50ms intervals), buffer 2 ticks = 100ms. This ensures
+// we always have two snapshots to lerp between, even if one packet is late.
+const INTERP_DELAY_MS = 100;
+const MAX_SNAPSHOTS = 8;
 
 interface TankInterpolationState {
   snapshots: TankSnapshot[];
@@ -492,6 +494,11 @@ export class GameEngine {
   // Interpolate all tanks from snapshot buffer (render 20ms in the past)
   // -------------------------------------------------------------------------
 
+  // Diagnostic: track interpolation quality
+  private interpDiagCounter = 0;
+  private interpDiagHits = 0;
+  private interpDiagMisses = 0;
+
   private interpolateTanks(): void {
     const renderTime = performance.now() - INTERP_DELAY_MS;
 
@@ -512,6 +519,7 @@ export class GameEngine {
         state.y = latest.y;
         state.angle = latest.angle;
         state.speed = latest.speed;
+        this.interpDiagMisses++;
       } else {
         // Lerp between snaps[i] and snaps[i+1]
         const a = snaps[i];
@@ -523,6 +531,7 @@ export class GameEngine {
         state.y = a.y + (b.y - a.y) * t;
         state.angle = a.angle + shortestAngleDelta(b.angle, a.angle) * t;
         state.speed = b.speed;
+        this.interpDiagHits++;
       }
 
       // Prune old snapshots we'll never need again (keep at least 2)
@@ -530,6 +539,19 @@ export class GameEngine {
         snaps.shift();
       }
     });
+
+    // Log interpolation quality every ~2 seconds (~120 frames)
+    this.interpDiagCounter++;
+    if (this.interpDiagCounter >= 120) {
+      const total = this.interpDiagHits + this.interpDiagMisses;
+      if (total > 0) {
+        const hitRate = ((this.interpDiagHits / total) * 100).toFixed(1);
+        console.log(`[Interp] hit=${this.interpDiagHits} miss=${this.interpDiagMisses} rate=${hitRate}% snaps=${this.tankStates.values().next().value?.snapshots.length ?? 0}`);
+      }
+      this.interpDiagCounter = 0;
+      this.interpDiagHits = 0;
+      this.interpDiagMisses = 0;
+    }
   }
 
   // -------------------------------------------------------------------------

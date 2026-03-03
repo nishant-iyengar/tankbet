@@ -56,9 +56,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.mazeHeight = MAZE_ROWS * CELL_SIZE;
     this.spawnPositions = getSpawnPositions(this.maze);
 
-    // Disable automatic patching — we call broadcastPatch() manually at the
-    // end of each tick to guarantee exactly 1 patch per simulation step.
-    this.patchRate = null;
+    // Decouple patch rate from physics tick rate. Physics runs at 100Hz for
+    // accuracy, but network patches are sent at 20Hz (every 50ms). Colyseus
+    // accumulates all state changes between patches and sends the net result.
+    this.patchRate = 50;
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, { keys: message.keys });
@@ -253,7 +254,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       })));
     }
 
-    // Broadcast state patch every tick (no bullet schema bloat, so this is cheap)
-    this.broadcastPatch();
+    // Patches are sent automatically by Colyseus at patchRate (20Hz).
+    // No manual broadcastPatch() needed — Colyseus accumulates changes.
   }
 }
