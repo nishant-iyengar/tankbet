@@ -38,6 +38,6 @@ export const PLEDGE_FEE_RATE = 0.05;
 // Server
 export const LIVES_PER_GAME = 5;
 export const SERVER_TICK_HZ = 100;
-export const SERVER_PATCH_HZ = SERVER_TICK_HZ;
+export const SERVER_PATCH_HZ = 60;
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;
 export const BULLET_FIRE_COOLDOWN_MS = 170; // min ms between shots per tank

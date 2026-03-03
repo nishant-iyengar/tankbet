@@ -3,6 +3,7 @@ import type { Client } from '@colyseus/core';
 import { TankRoomState, Tank, Bullet } from './TankRoomState';
 import {
   SERVER_TICK_HZ,
+  SERVER_PATCH_HZ,
   MAZE_COLS,
   MAZE_ROWS,
   CELL_SIZE,
@@ -44,6 +45,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected lastFiredAt = new Map<string, number>();
   // Internal physics state for bullets (velocity/age not in schema — only x/y/ownerId are synced)
   protected bulletPhysics = new Map<string, { vx: number; vy: number; age: number }>();
+  // Accumulator to decouple patch rate from tick rate
+  private patchAccumulator = 0;
+  private readonly patchInterval = 1 / SERVER_PATCH_HZ;
 
   protected initRoom(): void {
     this.state = new TankRoomState();
@@ -242,8 +246,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       this.bulletPhysics.delete(bulletId);
     }
 
-    // Send state patch immediately after each tick — guarantees exactly
-    // 1 patch per simulation step with no timer drift.
-    this.broadcastPatch();
+    // Send patches at SERVER_PATCH_HZ (may be lower than tick rate to reduce bandwidth)
+    this.patchAccumulator += dt;
+    if (this.patchAccumulator >= this.patchInterval) {
+      this.patchAccumulator -= this.patchInterval;
+      this.broadcastPatch();
+    }
   }
 }

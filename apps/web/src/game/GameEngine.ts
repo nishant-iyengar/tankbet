@@ -340,16 +340,15 @@ export class GameEngine {
     const now = performance.now();
     this.remoteTanks.forEach((remote) => {
       const elapsed = now - remote.lastUpdateTime;
-      const t = Math.min(elapsed / remote.updateInterval, 2.0);
-      const tClamped = Math.min(t, 1.0);
+      const t = Math.min(elapsed / remote.updateInterval, 1.5);
 
-      // Lerp from prev to target
-      remote.x = remote.prevX + (remote.targetX - remote.prevX) * tClamped;
-      remote.y = remote.prevY + (remote.targetY - remote.prevY) * tClamped;
+      // Lerp from prev to target, with mild extrapolation (t > 1) to cover patch gaps
+      remote.x = remote.prevX + (remote.targetX - remote.prevX) * t;
+      remote.y = remote.prevY + (remote.targetY - remote.prevY) * t;
 
       // Use shortestAngleDelta for angle interpolation
       const angleDelta = shortestAngleDelta(remote.targetAngle, remote.prevAngle);
-      remote.angle = remote.prevAngle + angleDelta * tClamped;
+      remote.angle = remote.prevAngle + angleDelta * t;
 
       remote.speed = remote.targetSpeed;
     });
@@ -396,7 +395,7 @@ export class GameEngine {
     // Draw bullets with interpolation between schema updates
     this.remoteBullets.forEach((remote) => {
       const elapsed = perfNow - remote.lastUpdateTime;
-      const t = Math.min(elapsed / remote.updateInterval, 1.0);
+      const t = Math.min(elapsed / remote.updateInterval, 1.5);
       const x = remote.prevX + (remote.targetX - remote.prevX) * t;
       const y = remote.prevY + (remote.targetY - remote.prevY) * t;
       drawBullet(this.ctx, { id: '', ownerId: remote.ownerId, x, y, vx: 0, vy: 0, age: 0 });
