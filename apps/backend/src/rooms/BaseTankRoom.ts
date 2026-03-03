@@ -214,6 +214,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       });
 
       if (!hitTank) {
+        // Broadcast bounce correction when velocity changed (wall reflection)
+        if (advanced.vx !== bullet.vx || advanced.vy !== bullet.vy) {
+          this.broadcast('bullet:bounce', { id: advanced.id, x: advanced.x, y: advanced.y, vx: advanced.vx, vy: advanced.vy });
+        }
         this.bullets[i] = advanced;
       }
     }

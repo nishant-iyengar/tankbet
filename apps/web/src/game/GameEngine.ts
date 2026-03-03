@@ -8,9 +8,6 @@ import {
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import {
-  PHYSICS_STEP,
-} from '@tankbet/game-engine/constants';
-import {
   clearCanvas,
   drawMaze,
   drawTank,
@@ -53,6 +50,14 @@ interface BulletFireEvent {
   vy: number;
 }
 
+interface BulletBounceEvent {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
 interface BulletRemoveEvent {
   id: string;
 }
@@ -70,7 +75,6 @@ export interface SeatReservation {
 // Derived constants
 // ---------------------------------------------------------------------------
 
-const MAX_PHYSICS_STEPS_PER_FRAME = 6;  // cap projectile catch-up per frame
 
 // ---------------------------------------------------------------------------
 // GameEngine
@@ -94,9 +98,8 @@ export class GameEngine {
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
 
-  // Projectile physics accumulator
+  // Frame timing for bullet advancement
   private lastFrameTime = 0;
-  private physicsAccumulator = 0;
 
   // Tank interpolation (all tanks, including local)
   private remoteTanks = new Map<string, RemoteTankState>();
@@ -193,7 +196,7 @@ export class GameEngine {
       // Per-instance change listener — fires when ANY property on this tank changes
       const tankProxy = getCallbacks(tank);
       tankProxy.onChange(() => {
-        // Detect alive -> dead transitions for explosions
+        // Detect alive state transitions
         const wasAlive = this.tankAliveState.get(sessionId);
         if (wasAlive === true && !tank.alive) {
           this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
@@ -260,6 +263,16 @@ export class GameEngine {
         vy: data.vy,
         age: 0,
       });
+    });
+
+    room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
+      const bullet = this.activeBullets.get(data.id);
+      if (bullet) {
+        // Only correct velocity direction — position converges naturally
+        // since the client already simulates bounces locally
+        bullet.vx = data.vx;
+        bullet.vy = data.vy;
+      }
     });
 
     room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
@@ -401,19 +414,16 @@ export class GameEngine {
 
     const now = Date.now();
 
-    // Fixed timestep accumulator for projectile advancement
+    // Advance bullets using raw frame delta for smooth rendering.
+    // Server corrects via bullet:bounce events on wall reflections.
     const perfNow = performance.now();
     if (this.lastFrameTime === 0) {
       this.lastFrameTime = perfNow;
     }
-    let frameDt = (perfNow - this.lastFrameTime) / 1000;
+    const frameDt = Math.min((perfNow - this.lastFrameTime) / 1000, 0.1);
     this.lastFrameTime = perfNow;
-    frameDt = Math.min(frameDt, MAX_PHYSICS_STEPS_PER_FRAME * PHYSICS_STEP);
-    this.physicsAccumulator += frameDt;
-
-    while (this.physicsAccumulator >= PHYSICS_STEP) {
-      this.advanceProjectiles(PHYSICS_STEP);
-      this.physicsAccumulator -= PHYSICS_STEP;
+    if (frameDt > 0) {
+      this.advanceProjectiles(frameDt);
     }
 
     // Interpolate all tanks (local + remote)
