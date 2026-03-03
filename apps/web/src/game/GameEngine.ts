@@ -43,7 +43,7 @@ interface TankSnapshot {
 // Default interpolation buffer delay — render this far in the past.
 // At 60Hz patches (~17ms intervals), 100ms ≈ 6 ticks of buffer. Absorbs
 // typical internet jitter while adding imperceptible latency for a tank game.
-const DEFAULT_INTERP_DELAY_MS = 100;
+const DEFAULT_INTERP_DELAY_MS = 80;
 const MAX_SNAPSHOTS = 8;
 
 interface TankInterpolationState {
