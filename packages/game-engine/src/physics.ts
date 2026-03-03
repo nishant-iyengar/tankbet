@@ -6,6 +6,8 @@ import {
   TANK_WIDTH,
   TANK_HEIGHT,
   BULLET_RADIUS,
+  BULLET_HIT_RADIUS,
+  TANK_HITBOX_SHRINK,
   BULLET_LIFETIME_SECONDS,
   WALL_FRICTION,
   CORNER_SHIELD_PADDING,
@@ -152,17 +154,17 @@ export function checkBulletTankCollision(bullet: BulletState, tank: TankState, w
   const localX = relX * cos + relY * sin;
   const localY = -relX * sin + relY * cos;
 
-  const halfW = TANK_WIDTH / 2;
-  const halfH = TANK_HEIGHT / 2;
+  // Body-only hitbox, shrunk slightly from visual for forgiving near-misses.
+  // Barrel is excluded from damage detection — barrel-tip hits feel random,
+  // not skillful, and every major tank game (Tank Trouble, Wii Tanks, Diep.io)
+  // uses body-only hitboxes.
+  const halfW = TANK_WIDTH / 2 - TANK_HITBOX_SHRINK;
+  const halfH = TANK_HEIGHT / 2 - TANK_HITBOX_SHRINK;
 
-  // Check body: centered rect [-halfW, -halfH] to [halfW, halfH]
-  const hitsBody = circleAABBOverlap(localX, localY, BULLET_RADIUS, -halfW, -halfH, halfW, halfH);
-
-  // Check barrel: rect from [0, -BARREL_WIDTH/2] to [BARREL_LENGTH, BARREL_WIDTH/2]
-  const halfBarrel = BARREL_WIDTH / 2;
-  const hitsBarrel = circleAABBOverlap(localX, localY, BULLET_RADIUS, 0, -halfBarrel, BARREL_LENGTH, halfBarrel);
-
-  if (!hitsBody && !hitsBarrel) return false;
+  // Use BULLET_HIT_RADIUS (larger than visual) so near-hits connect — favors the shooter
+  if (!circleAABBOverlap(localX, localY, BULLET_HIT_RADIUS, -halfW, -halfH, halfW, halfH)) {
+    return false;
+  }
 
   // Reject hit if a wall stands between bullet and tank center
   if (walls) {
