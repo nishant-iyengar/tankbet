@@ -7,8 +7,6 @@ import {
   MAZE_ROWS,
   CELL_SIZE,
   LIVES_PER_GAME,
-  BULLET_FIRE_COOLDOWN_MS,
-  BULLET_CORRECTION_INTERVAL_TICKS,
 } from '@tankbet/game-engine/constants';
 import {
   updateTank,
@@ -27,6 +25,7 @@ import type { Maze } from '@tankbet/game-engine/maze';
 
 interface InputMessage {
   keys: InputState;
+  tick: number;
 }
 
 export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
@@ -37,14 +36,15 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected mazeWidth = 0;
   protected mazeHeight = 0;
   protected pendingInputs = new Map<string, { keys: InputState }>();
+  // Per-session tick tracking: last client tick received + server ticks since then
+  protected lastClientTick = new Map<string, number>();
+  protected ticksSinceInput = new Map<string, number>();
   protected playerCount = 0;
   protected bulletIdCounter = 0;
   protected sessionToUserId = new Map<string, string>();
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
   protected spawnPositions: [Vec2, Vec2] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   protected lastFiredAt = new Map<string, number>();
-  // Local tick counter — not synced to clients (saves bandwidth vs schema field)
-  protected serverTick = 0;
   // Event-driven bullets — full physics state stored server-side, events broadcast to clients
   protected bullets: BulletState[] = [];
 
@@ -58,13 +58,15 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.mazeHeight = MAZE_ROWS * CELL_SIZE;
     this.spawnPositions = getSpawnPositions(this.maze);
 
-    // Decouple patch rate from physics tick rate. Physics runs at 100Hz for
-    // accuracy, but network patches are sent at 60Hz (every ~17ms). Colyseus
+    // Decouple patch rate from physics tick rate. Physics runs at 60Hz for
+    // accuracy, but network patches are sent at ~30Hz (every ~33ms). Colyseus
     // accumulates all state changes between patches and sends the net result.
-    this.patchRate = 17;
+    this.patchRate = 33;
 
     this.onMessage('input', (client: Client, message: InputMessage) => {
       this.pendingInputs.set(client.sessionId, { keys: message.keys });
+      this.lastClientTick.set(client.sessionId, message.tick);
+      this.ticksSinceInput.set(client.sessionId, 1);
     });
   }
 
@@ -139,8 +141,6 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     const dt = 1 / SERVER_TICK_HZ;
     if (this.state.phase !== 'playing') return;
 
-    this.serverTick++;
-
     // 1. Process pending inputs → move tanks first, then fire.
     // Moving before firing ensures the bullet spawns from the barrel's
     // current position, not where it was last tick.
@@ -159,10 +159,20 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const clamped = clampTankToMaze(updated, this.mazeWidth, this.mazeHeight);
       const { tank: collided } = collideTankWithWalls(clamped, prevTankState, this.wallSegments);
       const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
-      tank.x = shielded.x;
-      tank.y = shielded.y;
-      tank.angle = shielded.angle;
-      tank.speed = updated.speed;
+      // Quantize to float32 so server-side values match what clients receive
+      // over the wire (schema uses float32). This prevents drift from float64
+      // accumulation on the server vs float32 snapshots on the client.
+      tank.x = Math.fround(shielded.x);
+      tank.y = Math.fround(shielded.y);
+      tank.angle = Math.fround(shielded.angle);
+      tank.speed = Math.fround(updated.speed);
+
+      // Estimate which client tick we've caught up to:
+      // lastClientTick (from last input message) + server ticks processed since
+      const baseTick = this.lastClientTick.get(sessionId) ?? 0;
+      const elapsed = this.ticksSinceInput.get(sessionId) ?? 0;
+      tank.lastInputSeq = baseTick + elapsed;
+      this.ticksSinceInput.set(sessionId, elapsed + 1);
 
       // Fire from the updated position
       const now = Date.now();
@@ -248,18 +258,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       }
     }
 
-    // Periodically send authoritative bullet positions so clients can correct drift
-    if (this.bullets.length > 0 && this.serverTick % BULLET_CORRECTION_INTERVAL_TICKS === 0) {
-      this.broadcast('bullet:corrections', this.bullets.map((b) => ({
-        id: b.id,
-        x: b.x,
-        y: b.y,
-        vx: b.vx,
-        vy: b.vy,
-      })));
-    }
-
-    // Patches are sent automatically by Colyseus at patchRate (~60Hz / 17ms).
+    // Patches are sent automatically by Colyseus at patchRate (~30Hz / 33ms).
     // No manual broadcastPatch() needed — Colyseus accumulates changes.
   }
 }

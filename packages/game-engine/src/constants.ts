@@ -10,9 +10,9 @@ export const CORNER_SHIELD_PADDING = 4;   // extra px beyond OBB to keep tank aw
 export const TANK_ROTATION_SPEED = 200;   // deg/s
 export const BULLET_SPEED = 225;          // px/s
 export const MAX_BULLETS_PER_TANK = 10;
-export const BULLET_LIFETIME_SECONDS = 7; // time-based; bounces are infinite
+export const BULLET_LIFETIME_SECONDS = Infinity; // bullets last forever
 export const BULLET_RADIUS = 3;            // visual radius (drawn on canvas)
-export const BULLET_HIT_RADIUS = 4;       // collision radius — slightly larger so near-hits connect
+export const BULLET_HIT_RADIUS = 7;       // collision radius — generous to compensate for client-server position desync
 export const TANK_HITBOX_SHRINK = 1;      // px shrunk per side for damage hitbox (~90% of visual)
 export const BARREL_WIDTH = 5;            // px — barrel rectangle height in renderer
 export const WALL_LINE_WIDTH = 2;         // px — wall stroke width in renderer
@@ -39,11 +39,11 @@ export const PLEDGE_FEE_RATE = 0.05;
 
 // Server
 export const LIVES_PER_GAME = 5;
-export const SERVER_TICK_HZ = 100;
+export const SERVER_TICK_HZ = 60;
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;
-export const BULLET_FADE_SECONDS = 0.25;    // fade out over the last N seconds of lifetime
+export const CORRECTION_DECAY = 0.9;         // per physics step — error *= 0.9, i.e. 10% removed each step
+export const REMOTE_INTERP_DELAY_MS = 200;   // render remote tank 200ms in the past
+export const BULLET_FADE_SECONDS = 0.25;     // fade out over the last N seconds of lifetime
 export const TRACK_LIFETIME_MS = 2000;       // tank tracks visible for 2 seconds
 export const TRACK_SPACING = 8;              // px — minimum distance between track marks
-export const BULLET_FIRE_COOLDOWN_MS = 200; // min ms between shots per tank
-export const BULLET_CORRECTION_INTERVAL_TICKS = 30; // server sends position corrections every 30 ticks (300ms at 100Hz)
-export const BULLET_CORRECTION_BLEND_RATE = 0.3; // fraction of error corrected per frame (faster convergence, ~130ms)
+export const BULLET_FIRE_COOLDOWN_MS = 200;  // min ms between shots per tank

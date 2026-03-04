@@ -2,12 +2,13 @@ import { schema, MapSchema } from '@colyseus/schema';
 import { GAME_START_COUNTDOWN_SECONDS } from './constants.js';
 
 export const Tank = schema({
-  id:         { type: 'string',  default: '' },
-  x:          { type: 'float32', default: 0 },
-  y:          { type: 'float32', default: 0 },
-  angle:      { type: 'float32', default: 0 },
-  alive:      { type: 'boolean', default: true },
-  speed:      { type: 'float32', default: 0 },
+  id:           { type: 'string',  default: '' },
+  x:            { type: 'float32', default: 0 },
+  y:            { type: 'float32', default: 0 },
+  angle:        { type: 'float32', default: 0 },
+  alive:        { type: 'boolean', default: true },
+  speed:        { type: 'float32', default: 0 },
+  lastInputSeq: { type: 'int32',   default: 0 },
 }, 'Tank');
 export interface Tank {
   id: string;
@@ -16,6 +17,7 @@ export interface Tank {
   angle: number;
   alive: boolean;
   speed: number;
+  lastInputSeq: number;
 }
 
 export type GamePhase = 'waiting' | 'countdown' | 'playing' | 'resolving' | 'ended';

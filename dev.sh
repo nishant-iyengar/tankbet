@@ -13,4 +13,4 @@ printf '  └──────────────────────�
 printf '\033[0m\n'
 
 rm -f .overmind.sock
-overmind start -f Procfile.dev
+OVERMIND_CAN_DIE=toxisetup overmind start -f Procfile.dev

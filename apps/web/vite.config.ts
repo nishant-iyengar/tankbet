@@ -108,6 +108,8 @@ export default defineConfig({
         target: 'http://localhost:8474',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/toxiproxy/, ''),
+        // Toxiproxy's stopBrowsersMiddleware rejects User-Agent starting with "Mozilla/"
+        headers: { 'User-Agent': 'vite-proxy' },
       },
     },
   },

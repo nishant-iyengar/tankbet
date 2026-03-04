@@ -1,3 +1,4 @@
+import './patches/websocket-compat';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ClerkProvider } from '@clerk/clerk-react';

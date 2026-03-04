@@ -1,14 +1,26 @@
 import type { Room } from '@colyseus/sdk';
 import { getStateCallbacks } from '@colyseus/sdk';
 import type { Client } from '@colyseus/sdk';
-import type { InputState, TankState, BulletState } from '@tankbet/game-engine/physics';
+import type { InputState, TankState, BulletState, Vec2, WallSegment } from '@tankbet/game-engine/physics';
 import {
   shortestAngleDelta,
   advanceBullet,
   degreesToRadians,
+  updateTank,
+  clampTankToMaze,
+  collideTankWithWalls,
+  collideTankWithEndpoints,
+  extractWallEndpoints,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
-import { PHYSICS_STEP, BULLET_CORRECTION_BLEND_RATE, BARREL_LENGTH, TANK_WIDTH } from '@tankbet/game-engine/constants';
+import {
+  PHYSICS_STEP,
+  CORRECTION_DECAY,
+  REMOTE_INTERP_DELAY_MS,
+  MAZE_COLS,
+  MAZE_ROWS,
+  CELL_SIZE,
+} from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
   drawMaze,
@@ -31,7 +43,7 @@ import { InputHandler } from './InputHandler';
 // Interfaces
 // ---------------------------------------------------------------------------
 
-// Timestamped snapshot for interpolation buffer
+// Timestamped snapshot for remote tank interpolation buffer
 interface TankSnapshot {
   time: number; // performance.now() when received
   x: number;
@@ -40,19 +52,30 @@ interface TankSnapshot {
   speed: number;
 }
 
-// Default interpolation buffer delay — render this far in the past.
-// At 60Hz patches (~17ms intervals), 100ms ≈ 6 ticks of buffer. Absorbs
-// typical internet jitter while adding imperceptible latency for a tank game.
-const DEFAULT_INTERP_DELAY_MS = 80;
 const MAX_SNAPSHOTS = 8;
 
-interface TankInterpolationState {
-  snapshots: TankSnapshot[];
-  // Current rendered position (output of interpolation)
+// Saved prediction entry for reconciliation
+interface PredictionEntry {
+  tick: number;
+  input: InputState;
   x: number;
   y: number;
   angle: number;
-  speed: number;
+}
+
+// Error offset for visual smoothing (decays toward 0)
+interface ErrorOffset {
+  dx: number;
+  dy: number;
+  dAngle: number;
+}
+
+// Client-side bullet with error offset and prev position for alpha interp
+interface ClientBullet {
+  state: BulletState;
+  error: { dx: number; dy: number };
+  prevX: number;
+  prevY: number;
 }
 
 interface BulletFireEvent {
@@ -76,12 +99,13 @@ interface BulletRemoveEvent {
   id: string;
 }
 
-interface BulletCorrectionEntry {
-  id: string;
+// Remote tank interpolation state
+interface RemoteTankState {
+  snapshots: TankSnapshot[];
   x: number;
   y: number;
-  vx: number;
-  vy: number;
+  angle: number;
+  speed: number;
 }
 
 // Flat seat reservation shape from @colyseus/core 0.17 matchMaker.reserveSeatFor
@@ -116,25 +140,32 @@ export class GameEngine {
   private isPractice = false;
   private explosions: Array<{ x: number; y: number; startTime: number }> = [];
 
-  // Tank interpolation buffer (all tanks — local + remote use the same path)
-  private tankStates = new Map<string, TankInterpolationState>();
+  // --- Local tank (client-side prediction) ---
+  private localPhysics: TankState = { id: '', x: 0, y: 0, angle: 0, speed: 0 };
+  private localPrevPhysics: { x: number; y: number; angle: number } = { x: 0, y: 0, angle: 0 };
+  private localTankError: ErrorOffset = { dx: 0, dy: 0, dAngle: 0 };
+  private localPrevError: ErrorOffset = { dx: 0, dy: 0, dAngle: 0 };
+  private predictionBuffer: PredictionEntry[] = [];
+  private currentInput: InputState = { up: false, down: false, left: false, right: false, fire: false };
+  private clientTick = 0;
 
-  // Event-driven bullets — client simulates physics between server events
-  private activeBullets = new Map<string, BulletState>();
+  // Maze collision data for client-side prediction
+  private wallSegmentsTyped: WallSegment[] = [];
+  private wallEndpoints: Vec2[] = [];
+  private mazeWidth = MAZE_COLS * CELL_SIZE;
+  private mazeHeight = MAZE_ROWS * CELL_SIZE;
 
-  // Visual offsets for smooth server corrections.
-  // When a correction arrives, we compute error = serverPos - clientPos, set it as
-  // the offset, then decay the offset to zero over time. The bullet renders at
-  // physicsPos + offset, so physics is never disturbed.
-  private bulletOffsets = new Map<string, { dx: number; dy: number }>();
+  // --- Remote tank (200ms interpolation) ---
+  private remoteTankState: RemoteTankState | null = null;
+  private remoteSessionId = '';
 
-  // Fixed-timestep accumulator for bullet physics
+  // --- Bullets (simplified with error decay) ---
+  private activeBullets = new Map<string, ClientBullet>();
+
+  // --- Fixed-timestep accumulator ---
   private lastFrameTime = 0;
-  private physicsAccumulator = 0;
+  private accumulator = 0;
 
-  // Latency tracking for bullet fast-forward on spawn
-  private estimatedOneWayLatencySeconds = 0.025; // initial guess: 25ms
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
 
   // Game state tracking
   private currentPhase = 'waiting';
@@ -150,12 +181,6 @@ export class GameEngine {
   // Tank track marks (tread trails)
   private trackMarks: TrackMark[] = [];
   private lastTrackPos = new Map<string, { x: number; y: number }>();
-
-  // userId → sessionId mapping (for looking up visual tank position by ownerId)
-  private userIdToSessionId = new Map<string, string>();
-
-  // Interpolation buffer delay (ms) — configurable per instance
-  private interpDelayMs = DEFAULT_INTERP_DELAY_MS;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -190,26 +215,9 @@ export class GameEngine {
     this.localSessionId = room.sessionId;
 
     // -----------------------------------------------------------------------
-    // Latency measurement — smoothed EMA of one-way latency for bullet fast-forward
-    // -----------------------------------------------------------------------
-    this.pingInterval = setInterval(() => {
-      room.ping((rttMs: number) => {
-        const oneWaySeconds = (rttMs / 2) / 1000;
-        // Exponential moving average (smooth out jitter)
-        this.estimatedOneWayLatencySeconds =
-          this.estimatedOneWayLatencySeconds * 0.7 + oneWaySeconds * 0.3;
-      });
-    }, 2000);
-    // Take an initial measurement immediately
-    room.ping((rttMs: number) => {
-      this.estimatedOneWayLatencySeconds = (rttMs / 2) / 1000;
-    });
-
-    // -----------------------------------------------------------------------
     // Maze message
     // -----------------------------------------------------------------------
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
-      console.log(`[GameEngine] received maze: ${data.segments.length} segments`);
       this.setMazeSegments(data.segments);
     });
 
@@ -217,8 +225,6 @@ export class GameEngine {
     // Bullet event handlers (event-driven, not schema)
     // -----------------------------------------------------------------------
     room.onMessage('bullet:fire', (data: BulletFireEvent) => {
-      // Physics starts at the server position so the bullet stays in sync
-      // with the authoritative simulation (no correction catch-up needed).
       const bullet: BulletState = {
         id: data.id,
         ownerId: data.ownerId,
@@ -228,116 +234,46 @@ export class GameEngine {
         vy: data.vy,
         age: 0,
       };
-
-      // Set a visual offset so the bullet appears to leave from the visual
-      // tank's barrel tip (which is rendered interpDelayMs in the past).
-      // The offset decays smoothly via the existing correction system.
-      const ownerTank = this.findTankByUserId(data.ownerId);
-      if (ownerTank) {
-        const rad = degreesToRadians(ownerTank.angle);
-        const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2;
-        const visualX = ownerTank.x + Math.cos(rad) * spawnDist;
-        const visualY = ownerTank.y + Math.sin(rad) * spawnDist;
-        this.bulletOffsets.set(data.id, {
-          dx: visualX - data.x,
-          dy: visualY - data.y,
-        });
-      }
-
-      this.activeBullets.set(data.id, bullet);
+      this.activeBullets.set(data.id, {
+        state: bullet,
+        error: { dx: 0, dy: 0 },
+        prevX: data.x,
+        prevY: data.y,
+      });
     });
 
     room.onMessage('bullet:bounce', (data: BulletBounceEvent) => {
-      const bullet = this.activeBullets.get(data.id);
-      if (bullet) {
-        // The client already runs advanceBullet() which detects and applies
-        // bounces locally. By the time this server event arrives (one RTT later),
-        // the client has already bounced and moved past the bounce point.
-        // Snapping position would jump the bullet BACKWARD.
-        //
-        // Only correct velocity direction if it mismatches (client missed a
-        // bounce or bounced off the wrong wall).
-        if (Math.sign(bullet.vx) !== Math.sign(data.vx) ||
-            Math.sign(bullet.vy) !== Math.sign(data.vy)) {
-          bullet.vx = data.vx;
-          bullet.vy = data.vy;
-        }
-      }
+      const cb = this.activeBullets.get(data.id);
+      if (!cb) return;
+
+      // Snap physics to server position, compute visual error offset
+      const oldVisualX = cb.state.x + cb.error.dx;
+      const oldVisualY = cb.state.y + cb.error.dy;
+      cb.state.x = data.x;
+      cb.state.y = data.y;
+      cb.state.vx = data.vx;
+      cb.state.vy = data.vy;
+      cb.error.dx = oldVisualX - data.x;
+      cb.error.dy = oldVisualY - data.y;
     });
 
     room.onMessage('bullet:remove', (data: BulletRemoveEvent) => {
       this.activeBullets.delete(data.id);
-      this.bulletOffsets.delete(data.id);
     });
 
     room.onMessage('bullet:clear', () => {
       this.activeBullets.clear();
-      this.bulletOffsets.clear();
     });
 
     room.onMessage('bullet:sync', (bullets: BulletState[]) => {
       this.activeBullets.clear();
-      this.bulletOffsets.clear();
       for (const b of bullets) {
-        this.activeBullets.set(b.id, { ...b });
-      }
-    });
-
-    room.onMessage('bullet:corrections', (corrections: BulletCorrectionEntry[]) => {
-      for (const c of corrections) {
-        const bullet = this.activeBullets.get(c.id);
-        if (!bullet) continue;
-
-        // Fast-forward the server position by estimated latency so it
-        // represents where the server bullet is NOW, not where it was
-        // when the message was sent.
-        let sx = c.x;
-        let sy = c.y;
-        let svx = c.vx;
-        let svy = c.vy;
-        let remaining = this.estimatedOneWayLatencySeconds;
-        while (remaining >= PHYSICS_STEP) {
-          const advanced = advanceBullet(
-            { id: c.id, ownerId: '', x: sx, y: sy, vx: svx, vy: svy, age: 0 },
-            PHYSICS_STEP,
-            this.mazeSegments,
-          );
-          if (!advanced) break;
-          sx = advanced.x;
-          sy = advanced.y;
-          svx = advanced.vx;
-          svy = advanced.vy;
-          remaining -= PHYSICS_STEP;
-        }
-
-        const errorX = sx - bullet.x;
-        const errorY = sy - bullet.y;
-
-        // Only apply correction if error is significant (> 1px)
-        if (errorX * errorX + errorY * errorY > 1) {
-          // Save where the client currently is (visually)
-          const existingOffset = this.bulletOffsets.get(c.id);
-          const oldVisualX = bullet.x + (existingOffset?.dx ?? 0);
-          const oldVisualY = bullet.y + (existingOffset?.dy ?? 0);
-
-          // Snap PHYSICS to the server position (future simulation is now accurate)
-          bullet.x = sx;
-          bullet.y = sy;
-
-          // Set visual offset so rendered position stays at oldVisual (no visible jump)
-          // offset decays to zero → visual smoothly migrates to corrected physics
-          this.bulletOffsets.set(c.id, {
-            dx: oldVisualX - sx,
-            dy: oldVisualY - sy,
-          });
-        }
-
-        // Snap velocity if server disagrees (missed/wrong bounce)
-        if (Math.sign(bullet.vx) !== Math.sign(svx) ||
-            Math.sign(bullet.vy) !== Math.sign(svy)) {
-          bullet.vx = svx;
-          bullet.vy = svy;
-        }
+        this.activeBullets.set(b.id, {
+          state: { ...b },
+          error: { dx: 0, dy: 0 },
+          prevX: b.x,
+          prevY: b.y,
+        });
       }
     });
 
@@ -349,7 +285,7 @@ export class GameEngine {
     const $ = getCallbacks(room.state);
 
     // -----------------------------------------------------------------------
-    // Tank schema callbacks — same interpolation path for local + remote
+    // Tank schema callbacks — split local vs remote
     // -----------------------------------------------------------------------
     $.tanks.onAdd((tank, sessionId) => {
       // Track insertion order for color assignment
@@ -357,60 +293,88 @@ export class GameEngine {
         this.tankSessionOrder.push(sessionId);
       }
 
-      // Map userId (tank.id) → sessionId for bullet spawn lookups
-      if (tank.id) {
-        this.userIdToSessionId.set(tank.id, sessionId);
-      }
-
-      const now = performance.now();
-      const snapshot: TankSnapshot = { time: now, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
-      this.tankStates.set(sessionId, {
-        snapshots: [snapshot],
-        x: tank.x,
-        y: tank.y,
-        angle: tank.angle,
-        speed: tank.speed,
-      });
-
       this.tankAliveState.set(sessionId, tank.alive);
 
-      // Per-instance change listener — fires when ANY property on this tank changes
-      const tankProxy = getCallbacks(tank);
-      tankProxy.onChange(() => {
-        // Detect alive state transitions
-        const wasAlive = this.tankAliveState.get(sessionId);
-        if (wasAlive === true && !tank.alive) {
-          this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
-        }
+      if (sessionId === this.localSessionId) {
+        // Initialize local prediction state
+        this.localPhysics = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
+        this.localPrevPhysics = { x: tank.x, y: tank.y, angle: tank.angle };
+        this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
+        this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
+        this.predictionBuffer = [];
 
-        const isRespawn = wasAlive === false && tank.alive;
-        this.tankAliveState.set(sessionId, tank.alive);
-
-        const state = this.tankStates.get(sessionId);
-        if (!state) return;
-
-        const snapshotNow = performance.now();
-        const snap: TankSnapshot = { time: snapshotNow, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
-
-        if (isRespawn) {
-          // Clear buffer and snap to respawn position
-          state.snapshots = [snap];
-          state.x = tank.x;
-          state.y = tank.y;
-          state.angle = tank.angle;
-          state.speed = tank.speed;
-        } else {
-          state.snapshots.push(snap);
-          if (state.snapshots.length > MAX_SNAPSHOTS) {
-            state.snapshots.shift();
+        const tankProxy = getCallbacks(tank);
+        tankProxy.onChange(() => {
+          // Detect alive state transitions
+          const wasAlive = this.tankAliveState.get(sessionId);
+          if (wasAlive === true && !tank.alive) {
+            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
           }
-        }
-      });
+          const isRespawn = wasAlive === false && tank.alive;
+          this.tankAliveState.set(sessionId, tank.alive);
+
+          if (isRespawn) {
+            // Snap to respawn position, clear prediction
+            this.localPhysics = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
+            this.localPrevPhysics = { x: tank.x, y: tank.y, angle: tank.angle };
+            this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
+            this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
+            this.predictionBuffer = [];
+            return;
+          }
+
+          // Server reconciliation
+          this.reconcileLocalTank(tank.lastInputSeq, tank.x, tank.y, tank.angle);
+        });
+      } else {
+        // Remote tank — snapshot interpolation
+        this.remoteSessionId = sessionId;
+        const now = performance.now();
+        const snapshot: TankSnapshot = { time: now, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
+        this.remoteTankState = {
+          snapshots: [snapshot],
+          x: tank.x,
+          y: tank.y,
+          angle: tank.angle,
+          speed: tank.speed,
+        };
+
+        const tankProxy = getCallbacks(tank);
+        tankProxy.onChange(() => {
+          // Detect alive state transitions
+          const wasAlive = this.tankAliveState.get(sessionId);
+          if (wasAlive === true && !tank.alive) {
+            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+          }
+          const isRespawn = wasAlive === false && tank.alive;
+          this.tankAliveState.set(sessionId, tank.alive);
+
+          if (!this.remoteTankState) return;
+          const snapshotNow = performance.now();
+          const snap: TankSnapshot = { time: snapshotNow, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
+
+          if (isRespawn) {
+            this.remoteTankState.snapshots = [snap];
+            this.remoteTankState.x = tank.x;
+            this.remoteTankState.y = tank.y;
+            this.remoteTankState.angle = tank.angle;
+            this.remoteTankState.speed = tank.speed;
+          } else {
+            this.remoteTankState.snapshots.push(snap);
+            if (this.remoteTankState.snapshots.length > MAX_SNAPSHOTS) {
+              this.remoteTankState.snapshots.shift();
+            }
+          }
+        });
+      }
     });
 
     $.tanks.onRemove((_tank, sessionId) => {
-      this.tankStates.delete(sessionId);
       this.tankAliveState.delete(sessionId);
+      if (sessionId === this.remoteSessionId) {
+        this.remoteTankState = null;
+        this.remoteSessionId = '';
+      }
     });
 
     // -----------------------------------------------------------------------
@@ -451,13 +415,14 @@ export class GameEngine {
     });
 
     // -----------------------------------------------------------------------
-    // Input handler — sends to server on key state changes only
+    // Input handler — sends to server on key state changes, updates prediction
     // -----------------------------------------------------------------------
     this.inputHandler.attach(this.playerIndex, (keys: InputState) => {
-      this.room?.send('input', { keys });
+      this.currentInput = keys;
+      this.room?.send('input', { keys, tick: this.clientTick });
     });
 
-    this.startRenderLoop();
+    this.startGameLoop();
   }
 
   // -------------------------------------------------------------------------
@@ -470,144 +435,210 @@ export class GameEngine {
     }
   }
 
-  // Look up a tank's current visual state by userId (used for bullet spawn)
-  private findTankByUserId(userId: string): TankInterpolationState | undefined {
-    const sessionId = this.userIdToSessionId.get(userId);
-    if (!sessionId) return undefined;
-    return this.tankStates.get(sessionId);
+  // -------------------------------------------------------------------------
+  // Server reconciliation for local tank
+  // -------------------------------------------------------------------------
+
+  private reconcileLocalTank(lastInputSeq: number, serverX: number, serverY: number, serverAngle: number): void {
+    // Discard acknowledged predictions
+    this.predictionBuffer = this.predictionBuffer.filter((e) => e.tick > lastInputSeq);
+
+    // Save pre-reconciliation physics state
+    const oldX = this.localPhysics.x;
+    const oldY = this.localPhysics.y;
+    const oldAngle = this.localPhysics.angle;
+
+    // Snap physics to server position
+    this.localPhysics.x = serverX;
+    this.localPhysics.y = serverY;
+    this.localPhysics.angle = serverAngle;
+
+    // Replay unacknowledged inputs
+    for (const entry of this.predictionBuffer) {
+      const prevState: TankState = { ...this.localPhysics };
+      const moved = updateTank(prevState, { ...entry.input, fire: false }, PHYSICS_STEP);
+      const clamped = clampTankToMaze(moved, this.mazeWidth, this.mazeHeight);
+      const { tank: collided } = collideTankWithWalls(clamped, prevState, this.wallSegmentsTyped);
+      const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
+      this.localPhysics.x = Math.fround(shielded.x);
+      this.localPhysics.y = Math.fround(shielded.y);
+      this.localPhysics.angle = Math.fround(shielded.angle);
+    }
+
+    // Compare post-replay position with pre-reconciliation position
+    const dx = this.localPhysics.x - oldX;
+    const dy = this.localPhysics.y - oldY;
+    const dAngle = shortestAngleDelta(this.localPhysics.angle, oldAngle);
+
+    // Threshold tolerates input-timing mismatch (1-tick divergence ≈ 2.75px, 3.33°).
+    // Keep tight so tank position stays close to server truth (affects bullet hits).
+    if (dx * dx + dy * dy < 25 && dAngle * dAngle < 25) {
+      // Prediction was correct — restore original position, don't touch interpolation state
+      this.localPhysics.x = oldX;
+      this.localPhysics.y = oldY;
+      this.localPhysics.angle = oldAngle;
+      return;
+    }
+
+    // Prediction was wrong — compute error offset for smooth visual correction
+    const oldVisualX = oldX + this.localTankError.dx;
+    const oldVisualY = oldY + this.localTankError.dy;
+    const oldVisualAngle = oldAngle + this.localTankError.dAngle;
+
+    this.localTankError.dx = oldVisualX - this.localPhysics.x;
+    this.localTankError.dy = oldVisualY - this.localPhysics.y;
+    this.localTankError.dAngle = shortestAngleDelta(oldVisualAngle, this.localPhysics.angle);
   }
 
   // -------------------------------------------------------------------------
-  // Advance bullets client-side (fixed timestep)
+  // Physics tick (runs at fixed 60Hz)
   // -------------------------------------------------------------------------
 
-  private advanceProjectiles(frameDt: number): void {
-    this.physicsAccumulator += frameDt;
+  private physicsTick(): void {
+    this.clientTick++;
 
-    // Spiral-of-death clamp: if the tab was backgrounded and comes back,
-    // don't try to simulate hundreds of physics steps — just drop them.
-    if (this.physicsAccumulator > 0.2) {
-      this.physicsAccumulator = 0.2;
-    }
+    // --- Local tank prediction ---
+    const localAlive = this.tankAliveState.get(this.localSessionId);
+    if (localAlive) {
+      // Save prev for alpha interpolation
+      this.localPrevPhysics.x = this.localPhysics.x;
+      this.localPrevPhysics.y = this.localPhysics.y;
+      this.localPrevPhysics.angle = this.localPhysics.angle;
+      this.localPrevError = { ...this.localTankError };
 
-    while (this.physicsAccumulator >= PHYSICS_STEP) {
-      this.physicsAccumulator -= PHYSICS_STEP;
+      // Apply current input
+      const prevState: TankState = { ...this.localPhysics };
+      const moved = updateTank(prevState, { ...this.currentInput, fire: false }, PHYSICS_STEP);
+      const clamped = clampTankToMaze(moved, this.mazeWidth, this.mazeHeight);
+      const { tank: collided } = collideTankWithWalls(clamped, prevState, this.wallSegmentsTyped);
+      const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
+      // Quantize to float32 to match server precision (schema uses float32)
+      this.localPhysics.x = Math.fround(shielded.x);
+      this.localPhysics.y = Math.fround(shielded.y);
+      this.localPhysics.angle = Math.fround(shielded.angle);
+      this.localPhysics.speed = Math.fround(moved.speed);
 
-      const toRemove: string[] = [];
-      this.activeBullets.forEach((bullet, id) => {
-        const advanced = advanceBullet(bullet, PHYSICS_STEP, this.mazeSegments);
-        if (!advanced) {
-          toRemove.push(id);
-          return;
-        }
-        // Update in-place
-        bullet.x = advanced.x;
-        bullet.y = advanced.y;
-        bullet.vx = advanced.vx;
-        bullet.vy = advanced.vy;
-        bullet.age = advanced.age;
+      // Save prediction entry
+      this.predictionBuffer.push({
+        tick: this.clientTick,
+        input: { ...this.currentInput },
+        x: this.localPhysics.x,
+        y: this.localPhysics.y,
+        angle: this.localPhysics.angle,
       });
-
-      for (const id of toRemove) {
-        this.activeBullets.delete(id);
-        this.bulletOffsets.delete(id);
+      // Keep buffer bounded
+      if (this.predictionBuffer.length > 120) {
+        this.predictionBuffer = this.predictionBuffer.slice(-60);
       }
+
+      // Decay local tank error
+      this.localTankError.dx *= CORRECTION_DECAY;
+      this.localTankError.dy *= CORRECTION_DECAY;
+      this.localTankError.dAngle *= CORRECTION_DECAY;
     }
 
-    // Decay visual offsets toward zero (runs once per frame, not per physics step)
-    const decay = 1 - BULLET_CORRECTION_BLEND_RATE;
-    this.bulletOffsets.forEach((offset, id) => {
-      offset.dx *= decay;
-      offset.dy *= decay;
-      // Clear once sub-pixel
-      if (offset.dx * offset.dx + offset.dy * offset.dy < 0.25) {
-        this.bulletOffsets.delete(id);
+    // --- Advance bullets ---
+    const bulletsToRemove: string[] = [];
+    this.activeBullets.forEach((cb, id) => {
+      // Save prev visual position for alpha interp
+      cb.prevX = cb.state.x + cb.error.dx;
+      cb.prevY = cb.state.y + cb.error.dy;
+
+      const advanced = advanceBullet(cb.state, PHYSICS_STEP, this.mazeSegments);
+      if (!advanced) {
+        bulletsToRemove.push(id);
+        return;
       }
-    });
-  }
+      cb.state.x = advanced.x;
+      cb.state.y = advanced.y;
+      cb.state.vx = advanced.vx;
+      cb.state.vy = advanced.vy;
+      cb.state.age = advanced.age;
 
-  // -------------------------------------------------------------------------
-  // Interpolate all tanks from snapshot buffer (render 20ms in the past)
-  // -------------------------------------------------------------------------
-
-  // Diagnostic: track interpolation quality
-  private interpDiagCounter = 0;
-  private interpDiagHits = 0;
-  private interpDiagMisses = 0;
-
-  private interpolateTanks(): void {
-    const renderTime = performance.now() - this.interpDelayMs;
-
-    this.tankStates.forEach((state) => {
-      const snaps = state.snapshots;
-
-      // Find the two snapshots bracketing renderTime
-      // snaps are ordered by time (oldest first)
-      let i = snaps.length - 1;
-      while (i > 0 && snaps[i].time > renderTime) {
-        i--;
-      }
-
-      if (i === snaps.length - 1) {
-        // renderTime is past all snapshots — hold at latest position (no extrapolation)
-        const latest = snaps[i];
-        state.x = latest.x;
-        state.y = latest.y;
-        state.angle = latest.angle;
-        state.speed = latest.speed;
-        this.interpDiagMisses++;
-      } else {
-        // Lerp between snaps[i] and snaps[i+1]
-        const a = snaps[i];
-        const b = snaps[i + 1];
-        const span = b.time - a.time;
-        const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - a.time) / span)) : 1;
-
-        state.x = a.x + (b.x - a.x) * t;
-        state.y = a.y + (b.y - a.y) * t;
-        state.angle = a.angle + shortestAngleDelta(b.angle, a.angle) * t;
-        state.speed = b.speed;
-        this.interpDiagHits++;
-      }
-
-      // Prune old snapshots we'll never need again (keep at least 2)
-      while (snaps.length > 2 && snaps[1].time < renderTime) {
-        snaps.shift();
-      }
+      // Decay error
+      cb.error.dx *= CORRECTION_DECAY;
+      cb.error.dy *= CORRECTION_DECAY;
     });
 
-    // Log interpolation quality every ~2 seconds (~120 frames)
-    this.interpDiagCounter++;
-    if (this.interpDiagCounter >= 120) {
-      const total = this.interpDiagHits + this.interpDiagMisses;
-      if (total > 0) {
-        const hitRate = ((this.interpDiagHits / total) * 100).toFixed(1);
-        console.log(`[Interp] hit=${this.interpDiagHits} miss=${this.interpDiagMisses} rate=${hitRate}% snaps=${this.tankStates.values().next().value?.snapshots.length ?? 0}`);
-      }
-      this.interpDiagCounter = 0;
-      this.interpDiagHits = 0;
-      this.interpDiagMisses = 0;
+    for (const id of bulletsToRemove) {
+      this.activeBullets.delete(id);
     }
   }
 
   // -------------------------------------------------------------------------
-  // Render loop
+  // Interpolate remote tank from snapshot buffer (200ms in the past)
   // -------------------------------------------------------------------------
 
-  private startRenderLoop(): void {
+  private interpolateRemoteTank(): void {
+    if (!this.remoteTankState) return;
+    const state = this.remoteTankState;
+    const renderTime = performance.now() - REMOTE_INTERP_DELAY_MS;
+    const snaps = state.snapshots;
+
+    // Find the two snapshots bracketing renderTime
+    let i = snaps.length - 1;
+    while (i > 0 && snaps[i].time > renderTime) {
+      i--;
+    }
+
+    if (i === snaps.length - 1) {
+      // renderTime is past all snapshots — hold at latest
+      const latest = snaps[i];
+      state.x = latest.x;
+      state.y = latest.y;
+      state.angle = latest.angle;
+      state.speed = latest.speed;
+    } else {
+      // Lerp between snaps[i] and snaps[i+1]
+      const a = snaps[i];
+      const b = snaps[i + 1];
+      const span = b.time - a.time;
+      const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - a.time) / span)) : 1;
+
+      state.x = a.x + (b.x - a.x) * t;
+      state.y = a.y + (b.y - a.y) * t;
+      state.angle = a.angle + shortestAngleDelta(b.angle, a.angle) * t;
+      state.speed = b.speed;
+    }
+
+    // Prune old snapshots (keep at least 2)
+    while (snaps.length > 2 && snaps[1].time < renderTime) {
+      snaps.shift();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixed-timestep game loop with alpha interpolation
+  // -------------------------------------------------------------------------
+
+  private startGameLoop(): void {
     this.lastFrameTime = performance.now();
-    const render = (): void => {
-      this.draw();
-      this.animFrameId = requestAnimationFrame(render);
+    this.accumulator = 0;
+    const loop = (timestamp: number): void => {
+      const frameTime = Math.min((timestamp - this.lastFrameTime) / 1000, 0.1); // cap to prevent spiral of death
+      this.lastFrameTime = timestamp;
+      this.accumulator += frameTime;
+
+      while (this.accumulator >= PHYSICS_STEP) {
+        this.physicsTick();
+        this.accumulator -= PHYSICS_STEP;
+      }
+
+      const alpha = this.accumulator / PHYSICS_STEP;
+      this.render(alpha);
+      this.animFrameId = requestAnimationFrame(loop);
     };
-    this.animFrameId = requestAnimationFrame(render);
+    this.animFrameId = requestAnimationFrame(loop);
   }
 
-  private draw(): void {
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+
+  private render(alpha: number): void {
     const { width, height } = this.canvas;
 
     if (this.mazeCanvas) {
-      // Blit pre-rendered maze + background in one call
       this.ctx.drawImage(this.mazeCanvas, 0, 0);
     } else {
       clearCanvas(this.ctx, width, height);
@@ -617,77 +648,80 @@ export class GameEngine {
     }
 
     const now = Date.now();
-    const perfNow = performance.now();
-
-    // Advance bullet physics with fixed timestep
-    const frameDt = Math.min((perfNow - this.lastFrameTime) / 1000, 0.05); // cap at 50ms
-    this.lastFrameTime = perfNow;
-    this.advanceProjectiles(frameDt);
-
-    // Interpolate all tanks
-    this.interpolateTanks();
-
-    // Emit track marks for moving tanks
     const tankColors = ['#4ade80', '#f87171'];
-    this.tankStates.forEach((state, sessionId) => {
-      const alive = this.tankAliveState.get(sessionId);
-      if (!alive) return;
-      if (state.speed === 0) return;
 
-      const last = this.lastTrackPos.get(sessionId);
-      if (last) {
-        const dx = state.x - last.x;
-        const dy = state.y - last.y;
-        if (dx * dx + dy * dy >= TRACK_SPACING * TRACK_SPACING) {
-          const orderIdx = this.tankSessionOrder.indexOf(sessionId);
-          const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
-          this.trackMarks.push({
-            x: state.x,
-            y: state.y,
-            angle: degreesToRadians(state.angle),
-            time: now,
-            color,
-          });
-          this.lastTrackPos.set(sessionId, { x: state.x, y: state.y });
-        }
-      } else {
-        this.lastTrackPos.set(sessionId, { x: state.x, y: state.y });
-      }
-    });
+    // Interpolate remote tank (snapshot-based, no alpha needed)
+    this.interpolateRemoteTank();
+
+    // --- Emit track marks ---
+    // Local tank
+    const localAlive = this.tankAliveState.get(this.localSessionId);
+    if (localAlive && this.localPhysics.speed !== 0) {
+      const localRenderX = this.localPrevPhysics.x + this.localPrevError.dx +
+        (this.localPhysics.x + this.localTankError.dx - this.localPrevPhysics.x - this.localPrevError.dx) * alpha;
+      const localRenderY = this.localPrevPhysics.y + this.localPrevError.dy +
+        (this.localPhysics.y + this.localTankError.dy - this.localPrevPhysics.y - this.localPrevError.dy) * alpha;
+      this.emitTrackMark(this.localSessionId, localRenderX, localRenderY, this.localPhysics.angle, now, tankColors);
+    }
+
+    // Remote tank
+    if (this.remoteTankState && this.tankAliveState.get(this.remoteSessionId) && this.remoteTankState.speed !== 0) {
+      this.emitTrackMark(this.remoteSessionId, this.remoteTankState.x, this.remoteTankState.y, this.remoteTankState.angle, now, tankColors);
+    }
 
     // Prune expired track marks
     this.trackMarks = this.trackMarks.filter((t) => now - t.time < TRACK_LIFETIME_MS);
-
-    // Draw tracks behind tanks
     drawTracks(this.ctx, this.trackMarks, now, TRACK_LIFETIME_MS);
 
-    // Draw all tanks uniformly
-    this.tankStates.forEach((state, sessionId) => {
-      const alive = this.tankAliveState.get(sessionId);
-      if (!alive) return;
-      const orderIdx = this.tankSessionOrder.indexOf(sessionId);
-      const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
-      const ts: TankState = { id: sessionId, x: state.x, y: state.y, angle: state.angle, speed: state.speed };
-      drawTank(this.ctx, ts, color);
+    // --- Draw local tank (alpha interpolated) ---
+    if (localAlive) {
+      const prevVisX = this.localPrevPhysics.x + this.localPrevError.dx;
+      const prevVisY = this.localPrevPhysics.y + this.localPrevError.dy;
+      const prevVisAngle = this.localPrevPhysics.angle + this.localPrevError.dAngle;
+      const curVisX = this.localPhysics.x + this.localTankError.dx;
+      const curVisY = this.localPhysics.y + this.localTankError.dy;
+      const curVisAngle = this.localPhysics.angle + this.localTankError.dAngle;
+
+      const renderX = prevVisX + (curVisX - prevVisX) * alpha;
+      const renderY = prevVisY + (curVisY - prevVisY) * alpha;
+      const renderAngle = prevVisAngle + shortestAngleDelta(curVisAngle, prevVisAngle) * alpha;
+
+      const localOrderIdx = this.tankSessionOrder.indexOf(this.localSessionId);
+      const localColor = tankColors[localOrderIdx >= 0 ? localOrderIdx % 2 : 0];
+      const ts: TankState = { id: this.localSessionId, x: renderX, y: renderY, angle: renderAngle, speed: this.localPhysics.speed };
+      drawTank(this.ctx, ts, localColor);
+    }
+
+    // --- Draw remote tank (snapshot interpolation) ---
+    if (this.remoteTankState && this.tankAliveState.get(this.remoteSessionId)) {
+      const remoteOrderIdx = this.tankSessionOrder.indexOf(this.remoteSessionId);
+      const remoteColor = tankColors[remoteOrderIdx >= 0 ? remoteOrderIdx % 2 : 0];
+      const ts: TankState = {
+        id: this.remoteSessionId,
+        x: this.remoteTankState.x,
+        y: this.remoteTankState.y,
+        angle: this.remoteTankState.angle,
+        speed: this.remoteTankState.speed,
+      };
+      drawTank(this.ctx, ts, remoteColor);
+    }
+
+    // --- Draw bullets (alpha interpolated) ---
+    this.activeBullets.forEach((cb) => {
+      const curVisX = cb.state.x + cb.error.dx;
+      const curVisY = cb.state.y + cb.error.dy;
+      const bx = cb.prevX + (curVisX - cb.prevX) * alpha;
+      const by = cb.prevY + (curVisY - cb.prevY) * alpha;
+      drawBullet(this.ctx, { ...cb.state, x: bx, y: by });
     });
 
-    // Draw bullets from client-side simulation, applying visual correction offsets
-    this.activeBullets.forEach((bullet) => {
-      const offset = this.bulletOffsets.get(bullet.id);
-      if (offset) {
-        drawBullet(this.ctx, { ...bullet, x: bullet.x + offset.dx, y: bullet.y + offset.dy });
-      } else {
-        drawBullet(this.ctx, bullet);
-      }
-    });
-
-    // Draw and prune expired explosions
+    // --- Explosions ---
     this.explosions = this.explosions.filter((exp) => now - exp.startTime < EXPLOSION_DURATION_MS);
     for (const exp of this.explosions) {
       drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime);
     }
 
-    // HUD
+    // --- HUD ---
     const p1SessionId = this.tankSessionOrder[0] ?? '';
     const p2SessionId = this.tankSessionOrder[1] ?? '';
 
@@ -696,16 +730,7 @@ export class GameEngine {
     } else {
       const p1Lives = this.currentLives.get(p1SessionId) ?? 0;
       const p2Lives = this.currentLives.get(p2SessionId) ?? 0;
-      drawHUD(
-        this.ctx,
-        width,
-        height,
-        this.player1Name,
-        this.player2Name,
-        p1Lives,
-        p2Lives,
-        this.betAmountCents,
-      );
+      drawHUD(this.ctx, width, height, this.player1Name, this.player2Name, p1Lives, p2Lives, this.betAmountCents);
     }
 
     if (this.currentPhase === 'countdown') {
@@ -713,8 +738,46 @@ export class GameEngine {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Track mark emission helper
+  // -------------------------------------------------------------------------
+
+  private emitTrackMark(sessionId: string, x: number, y: number, angle: number, now: number, tankColors: string[]): void {
+    const last = this.lastTrackPos.get(sessionId);
+    if (last) {
+      const dx = x - last.x;
+      const dy = y - last.y;
+      if (dx * dx + dy * dy >= TRACK_SPACING * TRACK_SPACING) {
+        const orderIdx = this.tankSessionOrder.indexOf(sessionId);
+        const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
+        this.trackMarks.push({
+          x,
+          y,
+          angle: degreesToRadians(angle),
+          time: now,
+          color,
+        });
+        this.lastTrackPos.set(sessionId, { x, y });
+      }
+    } else {
+      this.lastTrackPos.set(sessionId, { x, y });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Maze setup
+  // -------------------------------------------------------------------------
+
   setMazeSegments(segments: LineSegment[]): void {
     this.mazeSegments = segments;
+    // Convert LineSegment[] to WallSegment[] for physics functions
+    this.wallSegmentsTyped = segments.map((seg) => ({
+      x1: seg.x1,
+      y1: seg.y1,
+      x2: seg.x2,
+      y2: seg.y2,
+    }));
+    this.wallEndpoints = extractWallEndpoints(this.wallSegmentsTyped);
     this.trackMarks = [];
     this.lastTrackPos.clear();
     this.rebuildMazeCanvas();
@@ -729,15 +792,10 @@ export class GameEngine {
     const offscreen = new OffscreenCanvas(width, height);
     const offCtx = offscreen.getContext('2d');
     if (!offCtx) return;
-    // Fill background so we can blit the whole thing (replaces clearCanvas + drawMaze)
     offCtx.fillStyle = BACKGROUND_COLOR;
     offCtx.fillRect(0, 0, width, height);
     drawMaze(offCtx, this.mazeSegments);
     this.mazeCanvas = offscreen;
-  }
-
-  setInterpDelay(ms: number): void {
-    this.interpDelayMs = ms;
   }
 
   forfeit(): void {
@@ -748,10 +806,6 @@ export class GameEngine {
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
-    }
-    if (this.pingInterval !== null) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
     }
     this.inputHandler.detach();
     void this.room?.leave();

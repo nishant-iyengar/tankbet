@@ -192,43 +192,48 @@ export function PracticePage(): React.JSX.Element {
     jitter: 0,
   });
 
-  const start = useCallback(async (): Promise<void> => {
-    if (!canvasRef.current) return;
-
-    setStatus('loading');
-    setError('');
-
-    try {
-      const { reservation, userId } = await apiFetch<PracticeStartResponse>('/api/practice/start', {
-        method: 'POST',
-      });
-
-      if (!canvasRef.current) return; // component may have unmounted
-
-      const client = new Client(wsUrlRef.current);
-      const engine = new GameEngine(canvasRef.current);
-      engineRef.current = engine;
-
-      engine.setPhaseChangeCallback((phase) => {
-        if (phase === 'playing') setStatus('playing');
-      });
-
-      await engine.connect(client, reservation, 0, userId, '', 0, true);
-      setStatus('playing');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect');
-      setStatus('error');
-    }
-  }, []);
-
   useEffect(() => {
+    let cancelled = false;
+
+    async function start(): Promise<void> {
+      if (!canvasRef.current) return;
+
+      setStatus('loading');
+      setError('');
+
+      try {
+        const { reservation, userId } = await apiFetch<PracticeStartResponse>('/api/practice/start', {
+          method: 'POST',
+        });
+
+        if (cancelled || !canvasRef.current) return;
+
+        const client = new Client(wsUrlRef.current);
+        const engine = new GameEngine(canvasRef.current);
+        engineRef.current = engine;
+
+        engine.setPhaseChangeCallback((phase) => {
+          if (phase === 'playing') setStatus('playing');
+        });
+
+        await engine.connect(client, reservation, 0, userId, '', 0, true);
+        if (!cancelled) setStatus('playing');
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to connect');
+          setStatus('error');
+        }
+      }
+    }
+
     void start();
 
     return () => {
+      cancelled = true;
       engineRef.current?.destroy();
       engineRef.current = null;
     };
-  }, [start, sessionKey]);
+  }, [sessionKey]);
 
   function newMaze(): void {
     engineRef.current?.destroy();
@@ -267,7 +272,7 @@ export function PracticePage(): React.JSX.Element {
             <div className="text-center">
               <p className="text-red-400 text-sm mb-3">{error}</p>
               <button
-                onClick={() => void start()}
+                onClick={newMaze}
                 className="text-cyan-400 hover:text-cyan-300 text-sm underline"
               >
                 Retry
