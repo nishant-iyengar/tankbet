@@ -129,7 +129,7 @@ export const LIVES_PER_GAME = 5;
 // Server
 export const SERVER_TICK_HZ = 20;
 export const CLIENT_FPS = 60;
-export const INTERPOLATION_DELAY_MS = 100;
+export const INTERPOLATION_DELAY_MS = 200;
 ```
 
 ### 1c. `packages/game-engine/src/physics.ts`
