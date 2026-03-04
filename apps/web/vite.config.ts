@@ -103,5 +103,12 @@ export default defineConfig({
   plugins: [browserConsoleRelay(), faviconSwap(), react()],
   server: {
     port: 5173,
+    proxy: {
+      '/toxiproxy': {
+        target: 'http://localhost:8474',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/toxiproxy/, ''),
+      },
+    },
   },
 });
