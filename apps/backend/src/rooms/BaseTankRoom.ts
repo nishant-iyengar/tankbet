@@ -145,7 +145,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     // Moving before firing ensures the bullet spawns from the barrel's
     // current position, not where it was last tick.
     this.state.tanks.forEach((tank, sessionId) => {
-      if (!tank.alive) return;
+      if (!tank.alive) {
+        // Clear stale input so it doesn't move the tank the instant it respawns
+        this.pendingInputs.delete(sessionId);
+        return;
+      }
 
       const pending = this.pendingInputs.get(sessionId);
       if (!pending) return;

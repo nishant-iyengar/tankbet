@@ -309,6 +309,9 @@ export class GameEngine {
           const wasAlive = this.tankAliveState.get(sessionId);
           if (wasAlive === true && !tank.alive) {
             this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+            // Reset input state so stale held-key inputs don't accumulate
+            this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
+            this.inputHandler.resetKeys();
           }
           const isRespawn = wasAlive === false && tank.alive;
           this.tankAliveState.set(sessionId, tank.alive);
@@ -320,6 +323,8 @@ export class GameEngine {
             this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
             this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
             this.predictionBuffer = [];
+            // Re-send current input so server picks up any keys held during death
+            this.room?.send('input', { keys: this.currentInput, tick: this.clientTick });
             return;
           }
 
@@ -419,7 +424,12 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     this.inputHandler.attach(this.playerIndex, (keys: InputState) => {
       this.currentInput = keys;
-      this.room?.send('input', { keys, tick: this.clientTick });
+      // Don't send inputs while dead — prevents stale pendingInputs on the
+      // server that would move the tank before the client knows about respawn.
+      const alive = this.tankAliveState.get(this.localSessionId);
+      if (alive) {
+        this.room?.send('input', { keys, tick: this.clientTick });
+      }
     });
 
     this.startGameLoop();

@@ -77,6 +77,10 @@ export class InputHandler {
     return { ...this.keys };
   }
 
+  resetKeys(): void {
+    this.keys = { up: false, down: false, left: false, right: false, fire: false };
+  }
+
   getSeq(): number {
     return this.seq;
   }
