@@ -20,6 +20,8 @@ import {
   MAZE_COLS,
   MAZE_ROWS,
   CELL_SIZE,
+  TANK_COLOR_P1,
+  TANK_COLOR_P2,
 } from '@tankbet/game-engine/constants';
 import {
   clearCanvas,
@@ -133,8 +135,6 @@ export class GameEngine {
   private playerIndex: 0 | 1 = 0;
   private player1Name = '';
   private player2Name = '';
-  private betAmountCents = 0;
-
   private onPhaseChange: ((phase: string, winnerId: string, roundWinnerId: string) => void) | null = null;
   private localSessionId = '';
   private isPractice = false;
@@ -166,6 +166,9 @@ export class GameEngine {
   private lastFrameTime = 0;
   private accumulator = 0;
 
+  // Set when a new maze arrives — forces next local tank update to snap instead of lerp
+  private snapNextLocalUpdate = false;
+
 
   // Game state tracking
   private currentPhase = 'waiting';
@@ -174,9 +177,6 @@ export class GameEngine {
   private currentRoundWinnerId = '';
   private currentLives = new Map<string, number>();
   private tankAliveState = new Map<string, boolean>();
-
-  // Track session ID insertion order for color assignment
-  private tankSessionOrder: string[] = [];
 
   // Tank track marks (tread trails)
   private trackMarks: TrackMark[] = [];
@@ -200,17 +200,43 @@ export class GameEngine {
     playerIndex: 0 | 1,
     player1Name: string,
     player2Name: string,
-    betAmountCents: number,
     practice = false,
   ): Promise<void> {
     this.client = colyseusClient;
     this.playerIndex = playerIndex;
     this.player1Name = player1Name;
     this.player2Name = player2Name;
-    this.betAmountCents = betAmountCents;
     this.isPractice = practice;
 
     const room = await this.client.consumeSeatReservation<TankRoomState>(seatReservation);
+    this.setupRoom(room);
+  }
+
+  async reconnect(
+    colyseusClient: Client,
+    reconnectionToken: string,
+    playerIndex: 0 | 1,
+    player1Name: string,
+    player2Name: string,
+  ): Promise<void> {
+    this.client = colyseusClient;
+    this.playerIndex = playerIndex;
+    this.player1Name = player1Name;
+    this.player2Name = player2Name;
+    this.isPractice = false;
+
+    const room = await this.client.reconnect<TankRoomState>(reconnectionToken);
+    this.setupRoom(room);
+    // Request maze + bullet state now that message handlers are registered
+    room.send('request:state');
+    console.log('[GameEngine] reconnect complete', { sessionId: room.sessionId });
+  }
+
+  getReconnectionToken(): string | null {
+    return this.room?.reconnectionToken ?? null;
+  }
+
+  private setupRoom(room: Room<TankRoomState>): void {
     this.room = room;
     this.localSessionId = room.sessionId;
 
@@ -218,6 +244,7 @@ export class GameEngine {
     // Maze message
     // -----------------------------------------------------------------------
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
+      console.log('[GameEngine] maze received, segments:', data.segments.length);
       this.setMazeSegments(data.segments);
     });
 
@@ -288,11 +315,7 @@ export class GameEngine {
     // Tank schema callbacks — split local vs remote
     // -----------------------------------------------------------------------
     $.tanks.onAdd((tank, sessionId) => {
-      // Track insertion order for color assignment
-      if (!this.tankSessionOrder.includes(sessionId)) {
-        this.tankSessionOrder.push(sessionId);
-      }
-
+      console.log('[GameEngine] tank onAdd', { sessionId, isLocal: sessionId === this.localSessionId, alive: tank.alive, x: tank.x, y: tank.y });
       this.tankAliveState.set(sessionId, tank.alive);
 
       if (sessionId === this.localSessionId) {
@@ -316,15 +339,18 @@ export class GameEngine {
           const isRespawn = wasAlive === false && tank.alive;
           this.tankAliveState.set(sessionId, tank.alive);
 
-          if (isRespawn) {
-            // Snap to respawn position, clear prediction
+          if (isRespawn || this.snapNextLocalUpdate) {
+            // Snap to new position — either respawn or new battle (maze changed)
+            this.snapNextLocalUpdate = false;
             this.localPhysics = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
             this.localPrevPhysics = { x: tank.x, y: tank.y, angle: tank.angle };
             this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
             this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
             this.predictionBuffer = [];
-            // Re-send current input so server picks up any keys held during death
-            this.room?.send('input', { keys: this.currentInput, tick: this.clientTick });
+            if (isRespawn) {
+              // Re-send current input so server picks up any keys held during death
+              this.room?.send('input', { keys: this.currentInput, tick: this.clientTick });
+            }
             return;
           }
 
@@ -358,7 +384,8 @@ export class GameEngine {
           const snapshotNow = performance.now();
           const snap: TankSnapshot = { time: snapshotNow, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
 
-          if (isRespawn) {
+          // Snap when respawning or when snapshots were cleared (new battle/maze)
+          if (isRespawn || this.remoteTankState.snapshots.length === 0) {
             this.remoteTankState.snapshots = [snap];
             this.remoteTankState.x = tank.x;
             this.remoteTankState.y = tank.y;
@@ -376,6 +403,7 @@ export class GameEngine {
 
     $.tanks.onRemove((_tank, sessionId) => {
       this.tankAliveState.delete(sessionId);
+      this.lastTrackPos.delete(sessionId);
       if (sessionId === this.remoteSessionId) {
         this.remoteTankState = null;
         this.remoteSessionId = '';
@@ -429,6 +457,8 @@ export class GameEngine {
       const alive = this.tankAliveState.get(this.localSessionId);
       if (alive) {
         this.room?.send('input', { keys, tick: this.clientTick });
+      } else {
+        console.log('[GameEngine] input blocked — tank not alive', { localSessionId: this.localSessionId, aliveState: this.tankAliveState });
       }
     });
 
@@ -582,8 +612,9 @@ export class GameEngine {
   private interpolateRemoteTank(): void {
     if (!this.remoteTankState) return;
     const state = this.remoteTankState;
-    const renderTime = performance.now() - REMOTE_INTERP_DELAY_MS;
     const snaps = state.snapshots;
+    if (snaps.length === 0) return;
+    const renderTime = performance.now() - REMOTE_INTERP_DELAY_MS;
 
     // Find the two snapshots bracketing renderTime
     let i = snaps.length - 1;
@@ -658,7 +689,6 @@ export class GameEngine {
     }
 
     const now = Date.now();
-    const tankColors = ['#4ade80', '#f87171'];
 
     // Interpolate remote tank (snapshot-based, no alpha needed)
     this.interpolateRemoteTank();
@@ -671,12 +701,12 @@ export class GameEngine {
         (this.localPhysics.x + this.localTankError.dx - this.localPrevPhysics.x - this.localPrevError.dx) * alpha;
       const localRenderY = this.localPrevPhysics.y + this.localPrevError.dy +
         (this.localPhysics.y + this.localTankError.dy - this.localPrevPhysics.y - this.localPrevError.dy) * alpha;
-      this.emitTrackMark(this.localSessionId, localRenderX, localRenderY, this.localPhysics.angle, now, tankColors);
+      this.emitTrackMark(this.localSessionId, localRenderX, localRenderY, this.localPhysics.angle, now);
     }
 
     // Remote tank
     if (this.remoteTankState && this.tankAliveState.get(this.remoteSessionId) && this.remoteTankState.speed !== 0) {
-      this.emitTrackMark(this.remoteSessionId, this.remoteTankState.x, this.remoteTankState.y, this.remoteTankState.angle, now, tankColors);
+      this.emitTrackMark(this.remoteSessionId, this.remoteTankState.x, this.remoteTankState.y, this.remoteTankState.angle, now);
     }
 
     // Prune expired track marks
@@ -696,16 +726,14 @@ export class GameEngine {
       const renderY = prevVisY + (curVisY - prevVisY) * alpha;
       const renderAngle = prevVisAngle + shortestAngleDelta(curVisAngle, prevVisAngle) * alpha;
 
-      const localOrderIdx = this.tankSessionOrder.indexOf(this.localSessionId);
-      const localColor = tankColors[localOrderIdx >= 0 ? localOrderIdx % 2 : 0];
+      const localColor = [TANK_COLOR_P1, TANK_COLOR_P2][this.playerIndex];
       const ts: TankState = { id: this.localSessionId, x: renderX, y: renderY, angle: renderAngle, speed: this.localPhysics.speed };
       drawTank(this.ctx, ts, localColor);
     }
 
     // --- Draw remote tank (snapshot interpolation) ---
     if (this.remoteTankState && this.tankAliveState.get(this.remoteSessionId)) {
-      const remoteOrderIdx = this.tankSessionOrder.indexOf(this.remoteSessionId);
-      const remoteColor = tankColors[remoteOrderIdx >= 0 ? remoteOrderIdx % 2 : 0];
+      const remoteColor = [TANK_COLOR_P1, TANK_COLOR_P2][1 - this.playerIndex];
       const ts: TankState = {
         id: this.remoteSessionId,
         x: this.remoteTankState.x,
@@ -732,15 +760,14 @@ export class GameEngine {
     }
 
     // --- HUD ---
-    const p1SessionId = this.tankSessionOrder[0] ?? '';
-    const p2SessionId = this.tankSessionOrder[1] ?? '';
-
     if (this.isPractice) {
-      drawHUD(this.ctx, width, height, '', '', 0, 0, 0);
+      drawHUD(this.ctx, width, height, '', '', 0, 0);
     } else {
-      const p1Lives = this.currentLives.get(p1SessionId) ?? 0;
-      const p2Lives = this.currentLives.get(p2SessionId) ?? 0;
-      drawHUD(this.ctx, width, height, this.player1Name, this.player2Name, p1Lives, p2Lives, this.betAmountCents);
+      const localLives = this.currentLives.get(this.localSessionId) ?? 0;
+      const remoteLives = this.currentLives.get(this.remoteSessionId) ?? 0;
+      const p1Lives = this.playerIndex === 0 ? localLives : remoteLives;
+      const p2Lives = this.playerIndex === 0 ? remoteLives : localLives;
+      drawHUD(this.ctx, width, height, this.player1Name, this.player2Name, p1Lives, p2Lives);
     }
 
     if (this.currentPhase === 'countdown') {
@@ -752,20 +779,19 @@ export class GameEngine {
   // Track mark emission helper
   // -------------------------------------------------------------------------
 
-  private emitTrackMark(sessionId: string, x: number, y: number, angle: number, now: number, tankColors: string[]): void {
+  private emitTrackMark(sessionId: string, x: number, y: number, angle: number, now: number): void {
     const last = this.lastTrackPos.get(sessionId);
     if (last) {
       const dx = x - last.x;
       const dy = y - last.y;
       if (dx * dx + dy * dy >= TRACK_SPACING * TRACK_SPACING) {
-        const orderIdx = this.tankSessionOrder.indexOf(sessionId);
-        const color = tankColors[orderIdx >= 0 ? orderIdx % 2 : 0];
+        const colorIdx = sessionId === this.localSessionId ? this.playerIndex : 1 - this.playerIndex;
         this.trackMarks.push({
           x,
           y,
           angle: degreesToRadians(angle),
           time: now,
-          color,
+          color: [TANK_COLOR_P1, TANK_COLOR_P2][colorIdx],
         });
         this.lastTrackPos.set(sessionId, { x, y });
       }
@@ -790,6 +816,17 @@ export class GameEngine {
     this.wallEndpoints = extractWallEndpoints(this.wallSegmentsTyped);
     this.trackMarks = [];
     this.lastTrackPos.clear();
+
+    // New maze means new battle — reset interpolation state so tanks snap
+    // to their new spawn positions instead of lerping from the old maze.
+    if (this.remoteTankState) {
+      this.remoteTankState.snapshots = [];
+    }
+    this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
+    this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
+    this.predictionBuffer = [];
+    this.snapNextLocalUpdate = true;
+
     this.rebuildMazeCanvas();
   }
 

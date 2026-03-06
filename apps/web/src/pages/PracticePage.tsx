@@ -4,6 +4,7 @@ import { GameEngine } from '../game/GameEngine';
 import type { SeatReservation } from '../game/GameEngine';
 import { apiFetch } from '../api/client';
 import { CELL_SIZE, MAZE_COLS, MAZE_ROWS } from '@tankbet/game-engine/constants';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 interface PracticeStartResponse {
   reservation: SeatReservation;
@@ -216,7 +217,7 @@ export function PracticePage(): React.JSX.Element {
           if (phase === 'playing') setStatus('playing');
         });
 
-        await engine.connect(client, reservation, 0, userId, '', 0, true);
+        await engine.connect(client, reservation, 0, userId, '', true);
         if (!cancelled) setStatus('playing');
       } catch (err) {
         if (!cancelled) {
@@ -270,7 +271,7 @@ export function PracticePage(): React.JSX.Element {
         {status === 'error' && (
           <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
             <div className="text-center">
-              <p className="text-red-400 text-sm mb-3">{error}</p>
+              <ErrorAlert message={error} className="mb-3" />
               <button
                 onClick={newMaze}
                 className="text-cyan-400 hover:text-cyan-300 text-sm underline"

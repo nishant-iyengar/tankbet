@@ -40,6 +40,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected lastClientTick = new Map<string, number>();
   protected ticksSinceInput = new Map<string, number>();
   protected playerCount = 0;
+  protected livesPerGame = LIVES_PER_GAME;
   protected bulletIdCounter = 0;
   protected sessionToUserId = new Map<string, string>();
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
@@ -87,7 +88,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     tank.alive = true;
     tank.speed = 0;
     this.state.tanks.set(client.sessionId, tank);
-    this.state.lives.set(client.sessionId, LIVES_PER_GAME);
+    this.state.lives.set(client.sessionId, this.livesPerGame);
 
     client.send('maze', { segments: this.wallSegments });
 

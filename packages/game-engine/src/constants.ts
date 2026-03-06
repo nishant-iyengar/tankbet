@@ -31,14 +31,9 @@ export const INVITE_EXPIRY_SECONDS = 120;         // 2 minutes
 export const RESPAWN_DELAY_MS = 1500;     // ms — delay before respawn after death (practice mode)
 export const TIE_WINDOW_MS = 2000;        // ms — if second tank dies within this window it's a tie
 export const BATTLE_TRANSITION_DELAY_MS = 1500; // ms — pause in 'resolving' phase before new map
-export const BET_AMOUNTS_CENTS = [100, 200, 500] as const;
-export type BetAmountCents = (typeof BET_AMOUNTS_CENTS)[number];
-export const MIN_DEPOSIT_CENTS = 100;
-export const WITHDRAWAL_FEE_CENTS = 25;
-export const PLEDGE_FEE_RATE = 0.05;
-
 // Server
 export const LIVES_PER_GAME = 5;
+export const LIVES_PER_TEST_GAME = 2;  // used by dev test-game mode
 export const SERVER_TICK_HZ = 60;
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;
 export const CORRECTION_DECAY = 0.9;         // per physics step — error *= 0.9, i.e. 10% removed each step

@@ -15,10 +15,6 @@ export {
   GRACE_PERIOD_SECONDS,
   GAME_START_COUNTDOWN_SECONDS,
   INVITE_EXPIRY_SECONDS,
-  BET_AMOUNTS_CENTS,
-  MIN_DEPOSIT_CENTS,
-  WITHDRAWAL_FEE_CENTS,
-  PLEDGE_FEE_RATE,
   LIVES_PER_GAME,
   SERVER_TICK_HZ,
   PHYSICS_STEP,
@@ -37,8 +33,6 @@ export {
   TRACK_LIFETIME_MS,
   TRACK_SPACING,
 } from './constants';
-export type { BetAmountCents } from './constants';
-
 export type {
   Vec2,
   InputState,

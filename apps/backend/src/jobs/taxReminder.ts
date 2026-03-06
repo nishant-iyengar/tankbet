@@ -1,3 +1,4 @@
+// @ts-nocheck — file kept but deactivated (charity/betting removed)
 import cron from 'node-cron';
 import { clerkClient } from '@clerk/fastify';
 import { prisma } from '../prisma.js';

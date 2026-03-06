@@ -1,19 +1,14 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { clerkPlugin } from '@clerk/fastify';
-import { Server } from '@colyseus/core';
+import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import { userRoutes } from './routes/users';
-import { charityRoutes } from './routes/charities';
 import { gameRoutes } from './routes/games';
-import { paymentRoutes } from './routes/payments';
-import { webhookRoutes } from './routes/webhooks';
 import { TankRoom } from './rooms/TankRoom';
 import { PracticeRoom } from './rooms/PracticeRoom';
 import { practiceRoutes } from './routes/practice';
-import { scheduleTaxReminderJob } from './jobs/taxReminder';
-import { scheduleDonationSummaryJob } from './jobs/donationSummary';
-import { startInviteExpiryJob } from './services/game.service';
+import { startGameCleanupJobs } from './services/game.service';
 import { env, isDev } from './environment';
 import { logger } from './logger';
 
@@ -37,10 +32,7 @@ async function start(): Promise<void> {
 
   // Route registration
   await fastify.register(userRoutes, { prefix: '/api/users' });
-  await fastify.register(charityRoutes, { prefix: '/api/charities' });
   await fastify.register(gameRoutes, { prefix: '/api/games' });
-  await fastify.register(paymentRoutes, { prefix: '/api/payments' });
-  await fastify.register(webhookRoutes, { prefix: '/api/webhooks' });
   await fastify.register(practiceRoutes, { prefix: '/api/practice' });
 
   if (isDev) {
@@ -48,9 +40,24 @@ async function start(): Promise<void> {
     await fastify.register(devRoutes, { prefix: '/api/dev' });
   }
 
-  scheduleTaxReminderJob();
-  scheduleDonationSummaryJob();
-  startInviteExpiryJob();
+  startGameCleanupJobs();
+
+  // Colyseus matchmaker reconnect route — the SDK's client.reconnect() POSTs
+  // here but WebSocketTransport only handles WS upgrades, not HTTP matchmaking.
+  interface ReconnectParams { roomId: string }
+  interface ReconnectBody { reconnectionToken: string }
+  fastify.post<{ Params: ReconnectParams; Body: ReconnectBody }>(
+    '/matchmake/reconnect/:roomId',
+    async (req, reply) => {
+      try {
+        const result = await matchMaker.reconnect(req.params.roomId, req.body);
+        return reply.send(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Reconnection failed';
+        return reply.status(500).send({ error: message });
+      }
+    },
+  );
 
   // Attach Colyseus to the same HTTP server as Fastify
   const gameServer = new Server({ transport: new WebSocketTransport({ server: fastify.server }) });

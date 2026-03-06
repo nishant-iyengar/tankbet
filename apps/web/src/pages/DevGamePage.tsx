@@ -1,6 +1,7 @@
 import { useContext, useState } from 'react';
 import { DevAuthContext, type DevUser } from '../auth/DevAuthContext';
 import { apiFetch } from '../api/client';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 interface DevUserResponse {
   id: string;
@@ -101,7 +102,7 @@ export function DevGamePage(): React.JSX.Element {
           and log in as the other player.
         </p>
 
-        {error && <p className="text-red-400 text-xs mb-4">{error}</p>}
+        {error && <ErrorAlert message={error} className="mb-4" />}
 
         {/* Dev user cards */}
         <div className="space-y-2 mb-6">

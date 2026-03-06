@@ -3,9 +3,9 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppAuth } from '../auth/useAppAuth';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../api/client';
-import { formatCents, formatTime } from '@tankbet/shared/utils';
-import { BETA_MODE } from '../config';
-import type { GameInvitePreview, PublicCharity } from '@tankbet/shared/types';
+import { formatTime } from '@tankbet/shared/utils';
+import type { GameInvitePreview } from '@tankbet/shared/types';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 function HomeButton({ className = '' }: { className?: string }): React.JSX.Element {
   const navigate = useNavigate();
@@ -24,7 +24,7 @@ export function InvitePage(): React.JSX.Element {
   const [searchParams] = useSearchParams();
   const isCreator = searchParams.get('creator') === 'true';
   const { isSignedIn } = useAppAuth();
-  const { get, post } = useApi();
+  const { post } = useApi();
   const navigate = useNavigate();
 
   const inviteLink = token ? `${window.location.origin}/invite/${token}` : '';
@@ -38,8 +38,6 @@ export function InvitePage(): React.JSX.Element {
   }, [inviteLink]);
 
   const [invite, setInvite] = useState<GameInvitePreview | null>(null);
-  const [charities, setCharities] = useState<PublicCharity[]>([]);
-  const [selectedCharity, setSelectedCharity] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState(false);
   const [cancellingInvite, setCancellingInvite] = useState(false);
@@ -73,12 +71,9 @@ export function InvitePage(): React.JSX.Element {
     };
 
     void fetchInvite();
-    void get<{ charities: PublicCharity[] }>('/api/charities')
-      .then((r) => { if (!cancelled) setCharities(r.charities); })
-      .catch(() => { /* non-critical */ });
 
     return () => { cancelled = true; };
-  }, [token, get, navigate]);
+  }, [token, navigate]);
 
   useEffect(() => {
     if (timeLeft <= 0) return;
@@ -108,7 +103,7 @@ export function InvitePage(): React.JSX.Element {
   }, [token, isCreator, invite, navigate]);
 
   async function handleAccept(): Promise<void> {
-    if (!token || (!BETA_MODE && !selectedCharity)) return;
+    if (!token) return;
 
     if (!isSignedIn) {
       navigate(`/login?redirect=${encodeURIComponent(`/invite/${token}`)}`);
@@ -118,13 +113,8 @@ export function InvitePage(): React.JSX.Element {
     setAccepting(true);
     setError('');
     try {
-      // Ensure the DB user record exists (new signups via invite link
-      // bypass Layout/OnboardingPage where onboard is normally called)
       await post('/api/users/onboard', {});
-
-      const result = await post<{ gameId: string }>(`/api/games/invite/${token}/accept`, {
-        charityId: BETA_MODE ? null : selectedCharity,
-      });
+      const result = await post<{ gameId: string }>(`/api/games/invite/${token}/accept`, {});
       navigate(`/game/${result.gameId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to accept invite');
@@ -157,7 +147,7 @@ export function InvitePage(): React.JSX.Element {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-slate-500 text-sm">Loading invite…</p>
+        <p className="text-slate-500 text-sm">Loading invite...</p>
       </div>
     );
   }
@@ -186,11 +176,6 @@ export function InvitePage(): React.JSX.Element {
           <div className={`text-4xl font-bold tabular-nums my-4 ${timeLeft <= 0 ? 'text-red-400' : 'text-white'}`}>
             {timeLeft <= 0 ? 'Link Expired' : formatTime(timeLeft)}
           </div>
-          {!BETA_MODE && (
-            <p className="text-sm text-slate-400 mb-1">
-              Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
-            </p>
-          )}
           <p className="text-xs text-slate-500 mb-3">Share the invite link with your opponent.</p>
           <div className="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
             <span className="flex-1 px-3 py-2.5 text-xs text-slate-400 truncate select-all font-mono">
@@ -221,7 +206,7 @@ export function InvitePage(): React.JSX.Element {
               disabled={cancellingInvite}
               className="mt-4 w-full border border-slate-700 text-slate-500 hover:border-red-500/50 hover:text-red-400 text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-40 disabled:pointer-events-none"
             >
-              {cancellingInvite ? 'Cancelling…' : 'Cancel Invite'}
+              {cancellingInvite ? 'Cancelling...' : 'Cancel Invite'}
             </button>
           )}
         </div>
@@ -236,12 +221,6 @@ export function InvitePage(): React.JSX.Element {
           {invite.creatorUsername} wants to play
         </h1>
         <div className="flex items-center gap-3 mb-5">
-          {!BETA_MODE && (
-            <span className="text-sm text-slate-400">
-              Bet: <span className="text-white font-medium tabular-nums">{formatCents(invite.betAmountCents)}</span>
-            </span>
-          )}
-          <span className="text-slate-600">·</span>
           <span className={`text-sm tabular-nums font-medium ${timeLeft <= 0 ? 'text-red-400' : timeLeft <= 30 ? 'text-red-400' : 'text-slate-400'}`}>
             {timeLeft <= 0 ? 'Link Expired' : formatTime(timeLeft)}
           </span>
@@ -251,28 +230,7 @@ export function InvitePage(): React.JSX.Element {
           <p className="text-red-400 text-sm mb-4">This invite has expired.</p>
         )}
 
-        {!BETA_MODE && (
-          <>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Your Charity</p>
-            <div className="grid grid-cols-2 gap-2 mb-5 max-h-52 overflow-y-auto">
-              {charities.map((charity) => (
-                <button
-                  key={charity.id}
-                  onClick={() => setSelectedCharity(charity.id)}
-                  className={`p-2.5 rounded-lg border text-left text-xs transition-colors ${
-                    selectedCharity === charity.id
-                      ? 'bg-cyan-400/10 border-cyan-400/60 text-cyan-300'
-                      : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-600'
-                  }`}
-                >
-                  {charity.name}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-
-        {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+        {error && <ErrorAlert message={error} className="mb-3" />}
 
         {timeLeft <= 0 ? (
           <HomeButton />
@@ -280,10 +238,10 @@ export function InvitePage(): React.JSX.Element {
           <div className="flex gap-2">
             <button
               onClick={() => void handleAccept()}
-              disabled={accepting || (!BETA_MODE && !selectedCharity)}
+              disabled={accepting}
               className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
             >
-              {accepting ? 'Accepting…' : 'Accept'}
+              {accepting ? 'Accepting...' : 'Accept'}
             </button>
             <button
               onClick={() => void handleReject()}

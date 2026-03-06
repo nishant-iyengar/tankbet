@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 type Step = 'consent' | 'card';
 
@@ -92,7 +93,7 @@ export function OnboardingPage(): React.JSX.Element {
                 />
                 <span className="text-sm text-slate-300">I have read and agree to the Terms of Service</span>
               </label>
-              {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+              {error && <ErrorAlert message={error} className="mb-3" />}
               <button
                 onClick={() => void handleConsent()}
                 disabled={loading || !tosChecked}
@@ -109,7 +110,7 @@ export function OnboardingPage(): React.JSX.Element {
               <p className="text-sm text-slate-400 mb-5">
                 You need a payment method on file to deposit funds and play.
               </p>
-              {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+              {error && <ErrorAlert message={error} className="mb-3" />}
               <button
                 onClick={() => void handleCardSetup()}
                 disabled={loading}

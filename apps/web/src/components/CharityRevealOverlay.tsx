@@ -1,3 +1,4 @@
+// @ts-nocheck — file kept but deactivated (charity/betting removed)
 import { formatCents } from '@tankbet/shared/utils';
 import type { PublicCharity } from '@tankbet/shared/types';
 

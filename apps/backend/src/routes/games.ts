@@ -3,88 +3,43 @@ import { prisma } from '../prisma';
 import { requireAuth } from '../middleware/auth';
 import { INVITE_EXPIRY_SECONDS } from '@tankbet/game-engine/constants';
 import crypto from 'node:crypto';
-import { isBetAmount } from '@tankbet/shared/utils';
 import { matchMaker } from '@colyseus/core';
-import { HttpError } from '../errors';
-import { isBeta } from '../environment';
 import { subscribe, unsubscribe, notify } from '../services/inviteEvents';
-
-/** Verify the user has enough available balance inside a transaction. No-op in beta. */
-async function assertSufficientBalance(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  userId: string,
-  requiredCents: number,
-): Promise<void> {
-  if (isBeta) return;
-  const user = await tx.user.findUnique({ where: { id: userId } });
-  if (!user) throw new HttpError(404, 'User not found');
-  if (user.balance - user.reservedBalance < requiredCents) {
-    throw new HttpError(400, 'Insufficient balance');
-  }
-}
 
 export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/games/create — Create invite
-  interface CreateGameBody { betAmountCents: number; charityId: string | null }
-  fastify.post<{ Body: CreateGameBody }>('/create', { preHandler: requireAuth }, async (req, reply) => {
+  fastify.post('/create', { preHandler: requireAuth }, async (req, reply) => {
     const user = req.dbUser;
-    const body = req.body;
-
-    if (!isBeta && !isBetAmount(body.betAmountCents)) {
-      return reply.status(400).send({ error: 'Invalid bet amount' });
-    }
 
     // Check user doesn't have an active game
     if (user.activeGameId) {
       return reply.status(400).send({ error: 'You already have an active game' });
     }
 
-    // Verify charity exists (skip in beta)
-    if (!isBeta) {
-      const charity = body.charityId ? await prisma.charity.findUnique({ where: { id: body.charityId } }) : null;
-      if (!charity || !charity.active) {
-        return reply.status(400).send({ error: 'Invalid charity' });
-      }
-    }
-
-    const betAmountCents = isBeta ? 0 : body.betAmountCents;
     const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const tokenBytes = crypto.randomBytes(6);
     const inviteToken = Array.from(tokenBytes, (b) => TOKEN_CHARS[b % TOKEN_CHARS.length]!).join('');
     const inviteExpiresAt = new Date(Date.now() + INVITE_EXPIRY_SECONDS * 1000);
 
-    let game: Awaited<ReturnType<typeof prisma.game.create>>;
-    try {
-      game = await prisma.$transaction(async (tx) => {
-        await assertSufficientBalance(tx, user.id, betAmountCents);
-
-        const created = await tx.game.create({
-          data: {
-            creatorId: user.id,
-            betAmountCents,
-            creatorCharityId: isBeta ? null : body.charityId,
-            status: 'PENDING_ACCEPTANCE',
-            inviteToken,
-            inviteExpiresAt,
-          },
-        });
-
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            reservedBalance: isBeta ? undefined : { increment: betAmountCents },
-            activeGameId: created.id,
-          },
-        });
-
-        return created;
+    const game = await prisma.$transaction(async (tx) => {
+      const created = await tx.game.create({
+        data: {
+          creatorId: user.id,
+          betAmountCents: 0,
+          creatorCharityId: null,
+          status: 'PENDING_ACCEPTANCE',
+          inviteToken,
+          inviteExpiresAt,
+        },
       });
-    } catch (err) {
-      if (err instanceof HttpError) {
-        return reply.status(err.statusCode).send({ error: err.message });
-      }
-      throw err;
-    }
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { activeGameId: created.id },
+      });
+
+      return created;
+    });
 
     return reply.status(201).send({
       gameId: game.id,
@@ -109,7 +64,6 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
 
     return reply.send({
       id: game.id,
-      betAmountCents: game.betAmountCents,
       creatorUsername: game.creator.username,
       inviteExpiresAt: game.inviteExpiresAt.toISOString(),
       status: game.status,
@@ -117,11 +71,9 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   // POST /api/games/invite/:token/accept — Accept invite
-  interface AcceptInviteBody { charityId: string }
-  fastify.post<{ Params: InviteParams; Body: AcceptInviteBody }>('/invite/:token/accept', { preHandler: requireAuth }, async (req, reply) => {
+  fastify.post<{ Params: InviteParams }>('/invite/:token/accept', { preHandler: requireAuth }, async (req, reply) => {
     const user = req.dbUser;
     const params = req.params;
-    const body = req.body;
 
     const game = await prisma.game.findUnique({
       where: { inviteToken: params.token },
@@ -147,42 +99,22 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: 'You already have an active game' });
     }
 
-    // Verify charity (skip in beta)
-    if (!isBeta) {
-      const charity = await prisma.charity.findUnique({ where: { id: body.charityId } });
-      if (!charity || !charity.active) {
-        return reply.status(400).send({ error: 'Invalid charity' });
-      }
-    }
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        await assertSufficientBalance(tx, user.id, game.betAmountCents);
-
-        await tx.game.update({
-          where: { id: game.id },
-          data: {
-            opponentId: user.id,
-            opponentCharityId: body.charityId,
-            status: 'IN_PROGRESS',
-            startedAt: new Date(),
-          },
-        });
-
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            reservedBalance: { increment: game.betAmountCents },
-            activeGameId: game.id,
-          },
-        });
+    await prisma.$transaction(async (tx) => {
+      await tx.game.update({
+        where: { id: game.id },
+        data: {
+          opponentId: user.id,
+          opponentCharityId: null,
+          status: 'IN_PROGRESS',
+          startedAt: new Date(),
+        },
       });
-    } catch (err) {
-      if (err instanceof HttpError) {
-        return reply.status(err.statusCode).send({ error: err.message });
-      }
-      throw err;
-    }
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { activeGameId: game.id },
+      });
+    });
 
     const room = await matchMaker.createRoom('tank', {
       gameId: game.id,
@@ -223,10 +155,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
 
       await tx.user.update({
         where: { id: game.creatorId },
-        data: {
-          reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
-          activeGameId: null,
-        },
+        data: { activeGameId: null },
       });
     });
 
@@ -250,10 +179,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       prisma.game.update({ where: { id: game.id }, data: { status: 'EXPIRED' } }),
       prisma.user.update({
         where: { id: user.id },
-        data: {
-          reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
-          activeGameId: null,
-        },
+        data: { activeGameId: null },
       }),
     ]);
 
@@ -311,8 +237,6 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       include: {
         creator: { select: { id: true, username: true } },
         opponent: { select: { id: true, username: true } },
-        creatorCharity: { select: { id: true, name: true, logoUrl: true } },
-        opponentCharity: { select: { id: true, name: true, logoUrl: true } },
       },
     });
 
@@ -343,10 +267,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
           ...playerIds.map((pid) =>
             prisma.user.update({
               where: { id: pid },
-              data: {
-                activeGameId: null,
-                reservedBalance: isBeta ? undefined : { decrement: game.betAmountCents },
-              },
+              data: { activeGameId: null },
             }),
           ),
         ]);
@@ -356,10 +277,13 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.send({ game, playerIndex, seatReservation: null });
     }
 
-    // Evict user's old session (reconnection hold / stale connection) to free the seat
-    await matchMaker.remoteRoomCall(game.colyseusRoomId, 'evictUser', [user.id]);
-
-    const seatReservation = await matchMaker.reserveSeatFor(listing, {}, { userId: user.id });
-    return reply.send({ game, playerIndex, seatReservation });
+    try {
+      const seatReservation = await matchMaker.reserveSeatFor(listing, {}, { userId: user.id });
+      return reply.send({ game, playerIndex, seatReservation });
+    } catch {
+      // Room is full — seat is likely held by allowReconnection for this player.
+      // Return null so the client can try reconnecting via stored token instead.
+      return reply.send({ game, playerIndex, seatReservation: null });
+    }
   });
 }

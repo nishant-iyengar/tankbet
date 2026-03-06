@@ -1,3 +1,4 @@
+// @ts-nocheck — file kept but deactivated (charity/betting removed)
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../prisma';
 import { requireAuth } from '../middleware/auth';

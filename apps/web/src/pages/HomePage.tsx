@@ -1,11 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
-import { formatCents } from '@tankbet/shared/utils';
-import { BET_AMOUNTS_CENTS } from '@tankbet/game-engine/constants';
-import { BankSetupModal } from '../components/BankSetupModal';
-import { BETA_MODE } from '../config';
-import type { BetAmountCents, PublicCharity } from '@tankbet/shared/types';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 interface ActiveGameInfo {
   gameId: string;
@@ -15,8 +11,6 @@ interface ActiveGameInfo {
 
 interface UserData {
   username: string;
-  balance: number;
-  hasBankAccount: boolean;
   activeGame: ActiveGameInfo | null;
 }
 
@@ -24,12 +18,8 @@ export function HomePage(): React.JSX.Element {
   const { get, post } = useApi();
   const navigate = useNavigate();
   const [user, setUser] = useState<UserData | null>(null);
-  const [charities, setCharities] = useState<PublicCharity[]>([]);
-  const [selectedBet, setSelectedBet] = useState<BetAmountCents>(200);
-  const [selectedCharity, setSelectedCharity] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const [showBankModal, setShowBankModal] = useState(false);
 
   const refreshUser = useCallback(() => {
     void get<UserData>('/api/users/me').then((userData) => {
@@ -46,22 +36,13 @@ export function HomePage(): React.JSX.Element {
 
   useEffect(() => {
     refreshUser();
-    void get<{ charities: PublicCharity[] }>('/api/charities').then((r) => setCharities(r.charities));
-  }, [get, refreshUser]);
+  }, [refreshUser]);
 
   async function createGame(): Promise<void> {
-    if (!BETA_MODE && !selectedCharity) {
-      setError('Please select a charity');
-      return;
-    }
-
     setCreating(true);
     setError('');
     try {
-      const result = await post<{ inviteToken: string }>('/api/games/create', {
-        betAmountCents: BETA_MODE ? 0 : selectedBet,
-        charityId: BETA_MODE ? null : selectedCharity,
-      });
+      const result = await post<{ inviteToken: string }>('/api/games/create', {});
       navigate(`/invite/${result.inviteToken}?creator=true`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create game');
@@ -70,18 +51,10 @@ export function HomePage(): React.JSX.Element {
     }
   }
 
-  async function handleCreateGame(): Promise<void> {
-    if (!BETA_MODE && !user?.hasBankAccount) {
-      setShowBankModal(true);
-      return;
-    }
-    await createGame();
-  }
-
   if (!user) {
     return (
       <div className="flex items-center justify-center h-32">
-        <p className="text-slate-500 text-sm">Loading…</p>
+        <p className="text-slate-500 text-sm">Loading...</p>
       </div>
     );
   }
@@ -92,92 +65,74 @@ export function HomePage(): React.JSX.Element {
         <h1 className="text-2xl font-bold text-white">
           Welcome, <span className="text-cyan-400">{user.username}</span>
         </h1>
-        <p className="text-slate-500 text-sm mt-1">Challenge a friend and donate to charity.</p>
+        <p className="text-slate-500 text-sm mt-1">Challenge a friend to a 1v1 tank battle.</p>
       </div>
 
       <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6">
-        <h2 className="text-base font-semibold text-white mb-1">New Game</h2>
-        {BETA_MODE && (
-          <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 mb-5">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            Preview mode — betting disabled
-          </p>
-        )}
-        {!BETA_MODE && <div className="mb-5" />}
+        <h2 className="text-base font-semibold text-white mb-5">New Game</h2>
 
-        {/* Bet chip selector */}
-        <div className={BETA_MODE ? 'opacity-40 pointer-events-none' : ''}>
-          <div className="flex items-center gap-2 mb-2">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Bet Amount</p>
-            {BETA_MODE && <span className="text-xs text-slate-600 normal-case tracking-normal">Disabled in beta</span>}
-          </div>
-          <div className="flex gap-2 mb-5">
-            {BET_AMOUNTS_CENTS.map((amount) => (
-              <button
-                key={amount}
-                onClick={() => setSelectedBet(amount)}
-                className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors tabular-nums ${
-                  selectedBet === amount
-                    ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-300'
-                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
-                }`}
-              >
-                {formatCents(amount)}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Charity picker */}
-        <div className={BETA_MODE ? 'opacity-40 pointer-events-none' : ''}>
-          <div className="flex items-center gap-2 mb-2">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Your Charity</p>
-            {BETA_MODE && <span className="text-xs text-slate-600 normal-case tracking-normal">Disabled in beta</span>}
-          </div>
-          <div className="grid grid-cols-2 gap-2 mb-5">
-            {charities.map((charity) => (
-              <button
-                key={charity.id}
-                onClick={() => setSelectedCharity(charity.id)}
-                className={`p-3 rounded-lg border text-left transition-colors ${
-                  selectedCharity === charity.id
-                    ? 'bg-cyan-400/10 border-cyan-400/60'
-                    : 'bg-slate-800 border-slate-700 hover:border-slate-600'
-                }`}
-              >
-                <span className={`block text-sm font-medium ${
-                  selectedCharity === charity.id ? 'text-cyan-300' : 'text-slate-300'
-                }`}>
-                  {charity.name}
-                </span>
-                <span className="block text-xs text-slate-500 mt-0.5">{charity.description}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+        {error && <ErrorAlert message={error} className="mb-3" />}
 
         <button
-          onClick={() => void handleCreateGame()}
-          disabled={creating || (!BETA_MODE && !selectedCharity)}
+          onClick={() => void createGame()}
+          disabled={creating}
           className="w-full bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg text-sm hover:bg-cyan-300 transition-colors disabled:opacity-40 disabled:pointer-events-none"
         >
-          {creating ? 'Creating…' : 'Generate Invite Link'}
+          {creating ? 'Creating...' : 'Generate Invite Link'}
         </button>
       </div>
 
-      {showBankModal && (
-        <BankSetupModal
-          onSuccess={() => {
-            setShowBankModal(false);
-            refreshUser();
-            void createGame();
-          }}
-          onClose={() => setShowBankModal(false)}
-        />
-      )}
+      <div className="mt-8 space-y-6">
+        <h2 className="text-lg font-bold text-white">How to Play</h2>
 
+        <section>
+          <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Objective</h3>
+          <p className="text-slate-300 text-sm leading-relaxed">
+            Eliminate your opponent by depleting all 5 of their lives. Each hit removes one life.
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Controls</h3>
+          <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-4">
+            <ul className="text-sm text-slate-300 space-y-2">
+              <li className="flex gap-3">
+                <span className="text-slate-500 w-16 shrink-0">Move</span>
+                <span>Arrow Keys</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-slate-500 w-16 shrink-0">Fire</span>
+                <span>Space</span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Bullets</h3>
+          <ul className="space-y-2">
+            {[
+              'Each bullet lasts 3 seconds',
+              'Bullets bounce off walls infinitely',
+              'Maximum 5 bullets active per player',
+              'You can be hit by your own bullets',
+            ].map((rule) => (
+              <li key={rule} className="flex items-start gap-2 text-sm text-slate-300">
+                <span className="text-cyan-400 mt-0.5">–</span>
+                {rule}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Disconnection</h3>
+          <p className="text-slate-300 text-sm leading-relaxed">
+            If you disconnect during a game, you have 30 seconds to reconnect. After that, the game
+            is forfeited and your opponent wins.
+          </p>
+        </section>
+      </div>
     </div>
   );
 }

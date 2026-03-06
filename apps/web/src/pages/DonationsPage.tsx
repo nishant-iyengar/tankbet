@@ -1,3 +1,4 @@
+// @ts-nocheck — file kept but deactivated (charity/betting removed)
 import { useEffect, useState } from 'react';
 import { useApi } from '../hooks/useApi';
 import { formatCents } from '@tankbet/shared/utils';

@@ -250,7 +250,6 @@ export function drawHUD(
   player2Name: string,
   player1Lives: number,
   player2Lives: number,
-  betAmountCents: number,
 ): void {
   ctx.font = HUD_FONT;
   ctx.textBaseline = 'top';
@@ -272,15 +271,5 @@ export function drawHUD(
     const p2Hearts = '\u2665'.repeat(player2Lives);
     const p2Text = `${p2Hearts}  ${player2Name}`;
     ctx.fillText(p2Text, canvasWidth - HUD_PADDING, HUD_PADDING);
-  }
-
-  // Bet amount — bottom center
-  if (betAmountCents > 0) {
-    ctx.font = HUD_FONT;
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    const dollars = (betAmountCents / 100).toFixed(2);
-    ctx.fillText(`Playing for $${dollars}`, canvasWidth / 2, canvasHeight - HUD_PADDING);
   }
 }

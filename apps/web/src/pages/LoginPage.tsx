@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppAuth } from '../auth/useAppAuth';
 import { DevAuthContext, type DevUser } from '../auth/DevAuthContext';
 import { apiFetch } from '../api/client';
+import { ErrorAlert } from '../components/ErrorAlert';
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -170,25 +171,13 @@ export function LoginPage(): React.JSX.Element {
         <div className="absolute inset-0 bg-gradient-to-r from-[#0a0e1a]/90 via-[#0a0e1a]/60 to-[#0a0e1a]/80" />
 
         {/* Branding content */}
-        <div className="relative z-10 flex flex-col justify-between p-12 w-full">
-          <div>
-            <h1 className="text-3xl font-bold text-cyan-400 tracking-tight">TankBet</h1>
-          </div>
-
-          <div className="max-w-md">
-            <h2 className="text-4xl xl:text-5xl font-bold text-white leading-tight mb-4">
-              Battle your friends.
-              <br />
-              <span className="text-cyan-400">Bet on it.</span>
-            </h2>
-            <p className="text-slate-400 text-lg leading-relaxed">
-              Challenge a friend to a 1v1 tank battle. Loser's bet goes straight to charity. No excuses.
-            </p>
-          </div>
-
-          <p className="text-slate-600 text-xs">
-            All bets are donated to verified charities.
-          </p>
+        <div className="relative z-10 flex flex-col justify-center p-12 w-full h-full">
+          <h1 className="text-3xl font-bold text-cyan-400 tracking-tight mb-6">TankBet</h1>
+          <h2 className="text-4xl xl:text-5xl font-bold text-white leading-tight">
+            Battle your friends.
+            <br />
+            <span className="text-cyan-400">Keep score.</span>
+          </h2>
         </div>
       </div>
 
@@ -217,7 +206,7 @@ export function LoginPage(): React.JSX.Element {
                   </button>
                 ))}
               </div>
-              {devError && <p className="text-red-400 text-sm mt-2">{devError}</p>}
+              {devError && <ErrorAlert message={devError} className="mt-2" />}
               <div className="border-b border-slate-700/50 mt-6 mb-2" />
             </div>
           )}
@@ -248,7 +237,7 @@ export function LoginPage(): React.JSX.Element {
                 autoComplete="tel"
                 autoFocus
               />
-              {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+              {error && <ErrorAlert message={error} className="mb-3" />}
               <button
                 type="submit"
                 disabled={loading || !phoneNumber.trim()}
@@ -276,7 +265,7 @@ export function LoginPage(): React.JSX.Element {
                 autoComplete="one-time-code"
                 autoFocus
               />
-              {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+              {error && <ErrorAlert message={error} className="mb-3" />}
               <button
                 type="submit"
                 disabled={loading || code.length !== 6}
@@ -295,9 +284,6 @@ export function LoginPage(): React.JSX.Element {
             </form>
           )}
 
-          <p className="text-xs text-slate-600 mt-8 text-center leading-relaxed">
-            By continuing, you agree to our Terms of Service and acknowledge our Privacy Policy.
-          </p>
         </div>
       </div>
     </div>

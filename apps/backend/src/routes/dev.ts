@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../prisma';
 import { matchMaker } from '@colyseus/core';
 import crypto from 'node:crypto';
+import { LIVES_PER_TEST_GAME } from '@tankbet/game-engine/constants';
 import { logger } from '../logger';
 import { requireAuth } from '../middleware/auth';
 
@@ -100,6 +101,7 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
       gameId: game.id,
       player1Id: creator.id,
       player2Id: opponent.id,
+      lives: LIVES_PER_TEST_GAME,
     });
 
     await prisma.$transaction([

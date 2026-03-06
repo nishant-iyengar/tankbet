@@ -4,128 +4,59 @@ import { Client } from '@colyseus/sdk';
 import { useApi } from '../hooks/useApi';
 import { GameEngine } from '../game/GameEngine';
 import type { SeatReservation } from '../game/GameEngine';
-import { CELL_SIZE, MAZE_COLS, MAZE_ROWS, PLEDGE_FEE_RATE } from '@tankbet/game-engine/constants';
+import { CELL_SIZE, MAZE_COLS, MAZE_ROWS } from '@tankbet/game-engine/constants';
 import { useMobile } from '../hooks/useMobile';
-import { formatCents } from '@tankbet/shared/utils';
-
-interface CharityData {
-  id: string;
-  name: string;
-  logoUrl: string;
-}
+import { ErrorAlert } from '../components/ErrorAlert';
 
 interface GameData {
   id: string;
   status: string;
   colyseusRoomId: string | null;
-  betAmountCents: number;
   winnerId: string | null;
   loserId: string | null;
   creator: { id: string; username: string };
   opponent: { id: string; username: string } | null;
-  creatorCharity: CharityData | null;
-  opponentCharity: CharityData | null;
+}
+
+function reconnectStorageKey(gameId: string): string {
+  return `tankbet:reconnect:${gameId}`;
+}
+
+function reconnectTimestampKey(gameId: string): string {
+  return `tankbet:reconnect-ts:${gameId}`;
+}
+
+function storeReconnectToken(gameId: string, token: string): void {
+  localStorage.setItem(reconnectStorageKey(gameId), token);
+  localStorage.setItem(reconnectTimestampKey(gameId), String(Date.now()));
+}
+
+function clearReconnectToken(gameId: string): void {
+  localStorage.removeItem(reconnectStorageKey(gameId));
+  localStorage.removeItem(reconnectTimestampKey(gameId));
 }
 
 function GameResultsOverlay({
   winnerId,
   myUserId,
-  game,
   opponentUsername,
 }: {
   winnerId: string;
   myUserId: string;
-  game: GameData;
   opponentUsername: string;
 }): React.JSX.Element {
   const navigate = useNavigate();
   const didWin = winnerId === myUserId;
 
-  // Determine which player is winner/loser
-  const winnerIsCreator = winnerId === game.creator.id;
-  const winnerCharity = winnerIsCreator ? game.creatorCharity : game.opponentCharity;
-  const loserCharity = winnerIsCreator ? game.opponentCharity : game.creatorCharity;
-
-  // My charity and opponent charity
-  const iAmCreator = myUserId === game.creator.id;
-  const myCharity = iAmCreator ? game.creatorCharity : game.opponentCharity;
-  const theirCharity = iAmCreator ? game.opponentCharity : game.creatorCharity;
-
-  const pledgeFee = Math.round(game.betAmountCents * PLEDGE_FEE_RATE);
-  const netAmountCents = game.betAmountCents - pledgeFee;
-  const totalDonatedCents = netAmountCents * 2;
-
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black/80">
       <div className="bg-slate-900 border border-slate-700/50 rounded-2xl p-8 w-[420px] text-center shadow-2xl">
-        {/* Win / Lose headline */}
         <p className={`text-3xl font-black tracking-wide mb-1 ${didWin ? 'text-green-400' : 'text-red-400'}`}>
           {didWin ? 'You Won!' : 'You Lost'}
         </p>
         <p className="text-slate-500 text-sm mb-7">
           {didWin ? `${opponentUsername} fought hard` : `${opponentUsername} took the win`}
         </p>
-
-        {/* Charity reveal */}
-        <div className="flex gap-4 mb-6">
-          {/* My charity */}
-          <div className={`flex-1 rounded-xl p-4 border ${didWin ? 'border-green-400/50 bg-green-400/5' : 'border-slate-700 bg-slate-800/50 opacity-60'}`}>
-            <div className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wider">You</div>
-            {myCharity ? (
-              <>
-                <img
-                  src={myCharity.logoUrl}
-                  alt={myCharity.name}
-                  className="w-10 h-10 rounded-lg object-contain mx-auto mb-2"
-                />
-                <p className="text-white text-xs font-semibold leading-tight">{myCharity.name}</p>
-              </>
-            ) : (
-              <p className="text-slate-500 text-xs">No charity</p>
-            )}
-          </div>
-
-          {/* vs divider */}
-          <div className="flex items-center">
-            <span className="text-slate-600 font-bold text-sm">vs</span>
-          </div>
-
-          {/* Their charity */}
-          <div className={`flex-1 rounded-xl p-4 border ${!didWin ? 'border-green-400/50 bg-green-400/5' : 'border-slate-700 bg-slate-800/50 opacity-60'}`}>
-            <div className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wider">{opponentUsername}</div>
-            {theirCharity ? (
-              <>
-                <img
-                  src={theirCharity.logoUrl}
-                  alt={theirCharity.name}
-                  className="w-10 h-10 rounded-lg object-contain mx-auto mb-2"
-                />
-                <p className="text-white text-xs font-semibold leading-tight">{theirCharity.name}</p>
-              </>
-            ) : (
-              <p className="text-slate-500 text-xs">No charity</p>
-            )}
-          </div>
-        </div>
-
-        {/* Donation result */}
-        {winnerCharity && (
-          <div className="bg-slate-800 rounded-xl px-5 py-4 mb-6 text-left">
-            <p className="text-slate-400 text-xs mb-1">Donated to winner's charity</p>
-            <p className="text-white text-xl font-bold tabular-nums">
-              {formatCents(totalDonatedCents)}
-              <span className="text-green-400 ml-2 text-sm font-semibold">→ {winnerCharity.name}</span>
-            </p>
-            <p className="text-slate-500 text-xs mt-1.5">
-              {formatCents(game.betAmountCents)} bet × 2 players · {Math.round(PLEDGE_FEE_RATE * 100)}% processing fee applied
-              {loserCharity && loserCharity.id !== winnerCharity.id && (
-                <span className="block mt-0.5 text-slate-600">
-                  {loserCharity.name} received nothing this round
-                </span>
-              )}
-            </p>
-          </div>
-        )}
 
         <button
           onClick={() => navigate('/')}
@@ -159,6 +90,9 @@ export function GamePage(): React.JSX.Element {
 
   function handleLeaveConfirm(): void {
     setShowLeaveModal(false);
+    if (id) {
+      clearReconnectToken(id);
+    }
     if (engineRef.current) {
       engineRef.current.forfeit();
       engineRef.current = null;
@@ -169,21 +103,88 @@ export function GamePage(): React.JSX.Element {
   useEffect(() => {
     if (isMobile || !id) return;
 
-    // Prevent StrictMode double-mount from making two connection attempts.
-    // connectingRef persists across unmount/remount, so mount 2 sees it and skips.
-    // Mount 1's async work runs to completion and sets engineRef.
     if (connectingRef.current || engineRef.current) return;
     connectingRef.current = true;
 
     async function loadAndConnect(): Promise<void> {
+      const gameId = id!;
+      const wsUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
+
       try {
-        const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${id}`);
+        // ------------------------------------------------------------------
+        // Step 1: Try reconnecting via stored token (survives tab close)
+        // ------------------------------------------------------------------
+        const storedToken = localStorage.getItem(reconnectStorageKey(gameId));
+        if (storedToken && canvasRef.current) {
+          try {
+            // We need game data for player names — fetch it in parallel
+            const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${gameId}`);
+            const { game, playerIndex } = data;
+
+            if (game.status !== 'IN_PROGRESS' || !game.opponent) {
+              // Game is no longer active — clear token and show appropriate state
+              clearReconnectToken(gameId);
+              setGameData(game);
+              if (game.status === 'COMPLETED' && game.winnerId && game.opponent) {
+                setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
+                setWinnerId(game.winnerId);
+                setPhase('ended');
+                connectingRef.current = false;
+                return;
+              }
+              connectingRef.current = false;
+              setError('Game is not available');
+              return;
+            }
+
+            setGameData(game);
+            setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
+            setPhase('connecting');
+
+            const client = new Client(wsUrl);
+            const engine = new GameEngine(canvasRef.current);
+
+            engine.setPhaseChangeCallback((p, wId, rWId) => {
+              setPhase(p);
+              setWinnerId(wId);
+              setRoundWinnerId(rWId);
+              if (p === 'ended') {
+                clearReconnectToken(gameId);
+              }
+            });
+
+            await engine.reconnect(
+              client,
+              storedToken,
+              playerIndex,
+              game.creator.username,
+              game.opponent.username,
+            );
+
+            // Update stored token (may have changed after reconnect)
+            const newToken = engine.getReconnectionToken();
+            if (newToken) {
+              storeReconnectToken(gameId, newToken);
+            }
+
+            engineRef.current = engine;
+            return;
+          } catch (reconnectErr) {
+            // Reconnection failed — remove stale token and fall through to fresh join
+            console.log('Reconnection failed, falling back to fresh join:', reconnectErr);
+            clearReconnectToken(gameId);
+          }
+        }
+
+        // ------------------------------------------------------------------
+        // Step 2: Fresh join via API seat reservation
+        // ------------------------------------------------------------------
+        const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${gameId}`);
 
         const { game, playerIndex, seatReservation } = data;
 
         setGameData(game);
 
-        // Show static results for completed games (e.g. revisiting a game URL)
         if (game.status === 'COMPLETED' && game.winnerId && game.opponent) {
           setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
           setWinnerId(game.winnerId);
@@ -192,7 +193,14 @@ export function GamePage(): React.JSX.Element {
           return;
         }
 
-        if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent || !seatReservation) {
+        if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent) {
+          connectingRef.current = false;
+          setError('Game is not available');
+          return;
+        }
+
+        if (!seatReservation) {
+          // Room is full (seat held by allowReconnection) but we don't have a token
           connectingRef.current = false;
           setError('Game is not available');
           return;
@@ -206,7 +214,6 @@ export function GamePage(): React.JSX.Element {
         setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
         setPhase('connecting');
 
-        const wsUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
         const client = new Client(wsUrl);
         const engine = new GameEngine(canvasRef.current);
 
@@ -214,6 +221,9 @@ export function GamePage(): React.JSX.Element {
           setPhase(p);
           setWinnerId(wId);
           setRoundWinnerId(rWId);
+          if (p === 'ended') {
+            clearReconnectToken(gameId);
+          }
         });
 
         await engine.connect(
@@ -222,8 +232,13 @@ export function GamePage(): React.JSX.Element {
           playerIndex,
           game.creator.username,
           game.opponent.username,
-          game.betAmountCents,
         );
+
+        // Store reconnection token for tab-close recovery
+        const token = engine.getReconnectionToken();
+        if (token) {
+          storeReconnectToken(gameId, token);
+        }
 
         engineRef.current = engine;
       } catch (err) {
@@ -276,7 +291,7 @@ export function GamePage(): React.JSX.Element {
               <p className="text-slate-500 text-sm mb-6">{msg.subtitle}</p>
             </>
           ) : (
-            <p className="text-red-400 mb-6 text-sm">{error}</p>
+            <ErrorAlert message={error} className="mb-6" />
           )}
           <button
             onClick={() => navigate('/')}
@@ -311,7 +326,7 @@ export function GamePage(): React.JSX.Element {
       )}
       {(phase === 'loading' || phase === 'connecting' || phase === 'waiting') && (
         <div className="absolute text-slate-400 text-sm">
-          {phase === 'loading' ? 'Loading game…' : phase === 'connecting' ? 'Connecting…' : 'Waiting for opponent…'}
+          {phase === 'loading' ? 'Loading game...' : phase === 'connecting' ? 'Connecting...' : 'Waiting for opponent...'}
         </div>
       )}
       {phase === 'resolving' && (
@@ -324,7 +339,7 @@ export function GamePage(): React.JSX.Element {
             ) : (
               <p className="text-red-400 text-2xl font-bold tracking-wide">Round Lost</p>
             )}
-            <p className="text-slate-500 text-xs mt-2">New map incoming…</p>
+            <p className="text-slate-500 text-xs mt-2">New map incoming...</p>
           </div>
         </div>
       )}
@@ -332,7 +347,6 @@ export function GamePage(): React.JSX.Element {
         <GameResultsOverlay
           winnerId={winnerId}
           myUserId={myUserId}
-          game={gameData}
           opponentUsername={opponentUsername}
         />
       )}

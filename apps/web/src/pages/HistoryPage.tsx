@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
-import { formatCents } from '@tankbet/shared/utils';
 import type { GameHistoryEntry, GameHistoryResponse, GameStatus } from '@tankbet/shared/types';
 
 const STATUS_OPTIONS: Array<{ label: string; value: GameStatus | '' }> = [
@@ -54,22 +53,19 @@ export function HistoryPage(): React.JSX.Element {
   const [entries, setEntries] = useState<GameHistoryEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [charities, setCharities] = useState<Array<{ id: string; name: string }>>([]);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<GameStatus | ''>('');
   const [resultFilter, setResultFilter] = useState<'WON' | 'LOST' | ''>('');
-  const [charityFilter, setCharityFilter] = useState('');
 
   const buildParams = useCallback((nextCursor?: string) => {
     const params = new URLSearchParams();
     if (nextCursor) params.set('cursor', nextCursor);
     if (statusFilter) params.set('status', statusFilter);
     if (resultFilter) params.set('result', resultFilter);
-    if (charityFilter) params.set('charityId', charityFilter);
     const qs = params.toString();
     return qs ? `?${qs}` : '';
-  }, [statusFilter, resultFilter, charityFilter]);
+  }, [statusFilter, resultFilter]);
 
   const loadEntries = useCallback(async (nextCursor?: string) => {
     setLoading(true);
@@ -81,9 +77,6 @@ export function HistoryPage(): React.JSX.Element {
         setEntries(result.entries);
       }
       setCursor(result.nextCursor);
-      if (result.charities.length > 0) {
-        setCharities(result.charities);
-      }
     } finally {
       setLoading(false);
     }
@@ -100,10 +93,6 @@ export function HistoryPage(): React.JSX.Element {
 
   function handleResultChange(value: string): void {
     setResultFilter(value as 'WON' | 'LOST' | '');
-  }
-
-  function handleCharityChange(value: string): void {
-    setCharityFilter(value);
   }
 
   return (
@@ -134,19 +123,6 @@ export function HistoryPage(): React.JSX.Element {
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
-
-        {charities.length > 0 && (
-          <select
-            value={charityFilter}
-            onChange={(e) => handleCharityChange(e.target.value)}
-            className={selectClass}
-          >
-            <option value="">All Charities</option>
-            {charities.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        )}
       </div>
 
       {/* Table */}
@@ -156,10 +132,7 @@ export function HistoryPage(): React.JSX.Element {
             <tr className="border-b border-slate-700/50 text-slate-400">
               <th className="text-left px-4 py-3 font-medium">Date</th>
               <th className="text-left px-4 py-3 font-medium">Opponent</th>
-              <th className="text-right px-4 py-3 font-medium">Bet</th>
-              <th className="text-left px-4 py-3 font-medium">Charity</th>
               <th className="text-center px-4 py-3 font-medium">Result</th>
-              <th className="text-right px-4 py-3 font-medium">Donation</th>
               <th className="text-right px-4 py-3 font-medium">Duration</th>
               <th className="text-left px-4 py-3 font-medium">Status</th>
             </tr>
@@ -173,19 +146,10 @@ export function HistoryPage(): React.JSX.Element {
                 <td className="px-4 py-3 text-slate-200 font-medium">
                   {entry.opponentUsername}
                 </td>
-                <td className="px-4 py-3 text-right text-slate-200 tabular-nums font-medium">
-                  {formatCents(entry.betAmountCents)}
-                </td>
-                <td className="px-4 py-3 text-slate-400 max-w-[140px] truncate">
-                  {entry.charityName || '—'}
-                </td>
                 <td className="px-4 py-3 text-center">
                   {entry.result === 'WON' && <span className="text-green-400 font-semibold">Won</span>}
                   {entry.result === 'LOST' && <span className="text-red-400 font-semibold">Lost</span>}
                   {entry.result === null && <span className="text-slate-500">—</span>}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-slate-300">
-                  {entry.donationAmountCents !== null ? formatCents(entry.donationAmountCents) : '—'}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums text-slate-400">
                   {entry.durationSeconds !== null ? formatDuration(entry.durationSeconds) : '—'}
@@ -206,7 +170,7 @@ export function HistoryPage(): React.JSX.Element {
       </div>
 
       {loading && (
-        <p className="text-center text-slate-500 text-sm mt-6">Loading…</p>
+        <p className="text-center text-slate-500 text-sm mt-6">Loading...</p>
       )}
 
       {cursor && !loading && (

@@ -3,6 +3,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { useAppUser } from '../auth/useAppAuth';
 import { useApi } from '../hooks/useApi';
 import { Modal } from './Modal';
+import { ErrorAlert } from './ErrorAlert';
 
 interface BankSetupModalProps {
   onSuccess: () => void;
@@ -67,7 +68,7 @@ export function BankSetupModal({ onSuccess, onClose }: BankSetupModalProps): Rea
           donation is sent to the winning charity automatically.
         </p>
 
-        {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+        {error && <ErrorAlert message={error} className="mb-4" />}
 
         <button
           onClick={() => void handleConnect()}
