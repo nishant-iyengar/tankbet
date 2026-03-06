@@ -42,3 +42,8 @@ export const BULLET_FADE_SECONDS = 0.25;     // fade out over the last N seconds
 export const TRACK_LIFETIME_MS = 2000;       // tank tracks visible for 2 seconds
 export const TRACK_SPACING = 8;              // px — minimum distance between track marks
 export const BULLET_FIRE_COOLDOWN_MS = 200;  // min ms between shots per tank
+
+// Room lifecycle
+export const GAME_END_DISCONNECT_DELAY_MS = 5000;  // ms — delay before disposing room after game ends
+export const CLEANUP_JOB_INTERVAL_MS = 30_000;     // ms — how often the orphan/stale-invite job runs
+export const ORPHANED_GAME_THRESHOLD_MS = 15 * 60 * 1000; // 15 min — max time before orphaned game is forfeited

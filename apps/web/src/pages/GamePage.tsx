@@ -97,7 +97,6 @@ export function GamePage(): React.JSX.Element {
       engineRef.current.forfeit();
       engineRef.current = null;
     }
-    navigate('/');
   }
 
   useEffect(() => {
@@ -111,81 +110,15 @@ export function GamePage(): React.JSX.Element {
       const wsUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
 
       try {
-        // ------------------------------------------------------------------
-        // Step 1: Try reconnecting via stored token (survives tab close)
-        // ------------------------------------------------------------------
-        const storedToken = localStorage.getItem(reconnectStorageKey(gameId));
-        if (storedToken && canvasRef.current) {
-          try {
-            // We need game data for player names — fetch it in parallel
-            const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${gameId}`);
-            const { game, playerIndex } = data;
-
-            if (game.status !== 'IN_PROGRESS' || !game.opponent) {
-              // Game is no longer active — clear token and show appropriate state
-              clearReconnectToken(gameId);
-              setGameData(game);
-              if (game.status === 'COMPLETED' && game.winnerId && game.opponent) {
-                setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
-                setWinnerId(game.winnerId);
-                setPhase('ended');
-                connectingRef.current = false;
-                return;
-              }
-              connectingRef.current = false;
-              setError('Game is not available');
-              return;
-            }
-
-            setGameData(game);
-            setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
-            setPhase('connecting');
-
-            const client = new Client(wsUrl);
-            const engine = new GameEngine(canvasRef.current);
-
-            engine.setPhaseChangeCallback((p, wId, rWId) => {
-              setPhase(p);
-              setWinnerId(wId);
-              setRoundWinnerId(rWId);
-              if (p === 'ended') {
-                clearReconnectToken(gameId);
-              }
-            });
-
-            await engine.reconnect(
-              client,
-              storedToken,
-              playerIndex,
-              game.creator.username,
-              game.opponent.username,
-            );
-
-            // Update stored token (may have changed after reconnect)
-            const newToken = engine.getReconnectionToken();
-            if (newToken) {
-              storeReconnectToken(gameId, newToken);
-            }
-
-            engineRef.current = engine;
-            return;
-          } catch (reconnectErr) {
-            // Reconnection failed — remove stale token and fall through to fresh join
-            console.log('Reconnection failed, falling back to fresh join:', reconnectErr);
-            clearReconnectToken(gameId);
-          }
-        }
-
-        // ------------------------------------------------------------------
-        // Step 2: Fresh join via API seat reservation
-        // ------------------------------------------------------------------
+        // Single API call to get game data + seat reservation
         const data = await getRef.current<{ game: GameData; playerIndex: 0 | 1; seatReservation: SeatReservation | null }>(`/api/games/${gameId}`);
-
         const { game, playerIndex, seatReservation } = data;
+        const storedToken = localStorage.getItem(reconnectStorageKey(gameId));
 
         setGameData(game);
 
         if (game.status === 'COMPLETED' && game.winnerId && game.opponent) {
+          clearReconnectToken(gameId);
           setMyUserId(playerIndex === 0 ? game.creator.id : game.opponent.id);
           setWinnerId(game.winnerId);
           setPhase('ended');
@@ -194,13 +127,7 @@ export function GamePage(): React.JSX.Element {
         }
 
         if (game.status !== 'IN_PROGRESS' || !game.colyseusRoomId || !game.opponent) {
-          connectingRef.current = false;
-          setError('Game is not available');
-          return;
-        }
-
-        if (!seatReservation) {
-          // Room is full (seat held by allowReconnection) but we don't have a token
+          clearReconnectToken(gameId);
           connectingRef.current = false;
           setError('Game is not available');
           return;
@@ -226,13 +153,39 @@ export function GamePage(): React.JSX.Element {
           }
         });
 
-        await engine.connect(
-          client,
-          seatReservation,
-          playerIndex,
-          game.creator.username,
-          game.opponent.username,
-        );
+        // Try reconnect token first, fall back to seat reservation
+        let connected = false;
+        if (storedToken) {
+          try {
+            await engine.reconnect(
+              client,
+              storedToken,
+              playerIndex,
+              game.creator.username,
+              game.opponent.username,
+            );
+            connected = true;
+          } catch (reconnectErr) {
+            console.log('Reconnection failed, falling back to fresh join:', reconnectErr);
+            clearReconnectToken(gameId);
+          }
+        }
+
+        if (!connected) {
+          if (!seatReservation) {
+            connectingRef.current = false;
+            setError('Game is not available');
+            return;
+          }
+
+          await engine.connect(
+            client,
+            seatReservation,
+            playerIndex,
+            game.creator.username,
+            game.opponent.username,
+          );
+        }
 
         // Store reconnection token for tab-close recovery
         const token = engine.getReconnectionToken();

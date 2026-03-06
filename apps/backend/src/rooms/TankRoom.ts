@@ -5,6 +5,7 @@ import {
   GRACE_PERIOD_SECONDS,
   TIE_WINDOW_MS,
   BATTLE_TRANSITION_DELAY_MS,
+  GAME_END_DISCONNECT_DELAY_MS,
 } from '@tankbet/game-engine/constants';
 import { BaseTankRoom } from './BaseTankRoom';
 import { prisma } from '../prisma';
@@ -66,11 +67,6 @@ export class TankRoom extends BaseTankRoom {
     this.sessionToUserId.forEach((uid, sid) => {
       if (uid === auth.userId) existingSessionId = sid;
     });
-    if (existingSessionId === null) {
-      this.state.tanks.forEach((tank, sid) => {
-        if (tank.id === auth.userId) existingSessionId = sid;
-      });
-    }
 
     if (existingSessionId !== null) {
       const tank = this.state.tanks.get(existingSessionId);
@@ -276,6 +272,6 @@ export class TankRoom extends BaseTankRoom {
       }),
     ]);
 
-    this.clock.setTimeout(() => { this.disconnect(); }, 5000);
+    this.clock.setTimeout(() => { this.disconnect(); }, GAME_END_DISCONNECT_DELAY_MS);
   }
 }

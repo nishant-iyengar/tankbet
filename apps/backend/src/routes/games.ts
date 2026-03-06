@@ -256,24 +256,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
 
     const [listing] = await matchMaker.query({ roomId: game.colyseusRoomId });
     if (!listing) {
-      // Room is gone (server restart, crash) — auto-forfeit the orphaned game
-      if (game.status === 'IN_PROGRESS') {
-        const playerIds = [game.creatorId, game.opponentId].filter((pid): pid is string => pid !== null);
-        await prisma.$transaction([
-          prisma.game.update({
-            where: { id: game.id },
-            data: { status: 'FORFEITED', endedAt: new Date() },
-          }),
-          ...playerIds.map((pid) =>
-            prisma.user.update({
-              where: { id: pid },
-              data: { activeGameId: null },
-            }),
-          ),
-        ]);
-        const updatedGame = { ...game, status: 'FORFEITED' as const };
-        return reply.send({ game: updatedGame, playerIndex, seatReservation: null });
-      }
+      // Room is gone — don't forfeit here; the cleanup job handles orphaned games.
       return reply.send({ game, playerIndex, seatReservation: null });
     }
 

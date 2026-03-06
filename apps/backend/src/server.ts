@@ -40,7 +40,15 @@ async function start(): Promise<void> {
     await fastify.register(devRoutes, { prefix: '/api/dev' });
   }
 
-  startGameCleanupJobs();
+  const cleanupHandle = startGameCleanupJobs();
+
+  const shutdown = (): void => {
+    clearInterval(cleanupHandle);
+    logger.info('Cleanup jobs stopped');
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 
   // Colyseus matchmaker reconnect route — the SDK's client.reconnect() POSTs
   // here but WebSocketTransport only handles WS upgrades, not HTTP matchmaking.
