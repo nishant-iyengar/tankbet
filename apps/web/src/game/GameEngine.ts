@@ -11,6 +11,7 @@ import {
   collideTankWithWalls,
   collideTankWithEndpoints,
   extractWallEndpoints,
+  hermiteLerp,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import {
@@ -54,7 +55,7 @@ interface TankSnapshot {
   speed: number;
 }
 
-const MAX_SNAPSHOTS = 8;
+const MAX_SNAPSHOTS = 16;
 
 // Saved prediction entry for reconciliation
 interface PredictionEntry {
@@ -155,7 +156,7 @@ export class GameEngine {
   private mazeWidth = MAZE_COLS * CELL_SIZE;
   private mazeHeight = MAZE_ROWS * CELL_SIZE;
 
-  // --- Remote tank (200ms interpolation) ---
+  // --- Remote tank (snapshot interpolation) ---
   private remoteTankState: RemoteTankState | null = null;
   private remoteSessionId = '';
 
@@ -169,6 +170,8 @@ export class GameEngine {
   // Set when a new maze arrives — forces next local tank update to snap instead of lerp
   private snapNextLocalUpdate = false;
 
+  // Ping/RTT measurement for lag compensation
+  private pingIntervalId: ReturnType<typeof setInterval> | null = null;
 
   // Game state tracking
   private currentPhase = 'waiting';
@@ -261,11 +264,19 @@ export class GameEngine {
         vy: data.vy,
         age: 0,
       };
+
+      // For local bullets, nudge spawn toward the predicted tank position.
+      // localTankError is the small offset between predicted and server positions
+      // (~2-5px), keeping the bullet visually close to the barrel tip.
+      const isLocal = data.ownerId === this.localPhysics.id;
+      const errorDx = isLocal ? this.localTankError.dx : 0;
+      const errorDy = isLocal ? this.localTankError.dy : 0;
+
       this.activeBullets.set(data.id, {
         state: bullet,
-        error: { dx: 0, dy: 0 },
-        prevX: data.x,
-        prevY: data.y,
+        error: { dx: errorDx, dy: errorDy },
+        prevX: data.x + errorDx,
+        prevY: data.y + errorDy,
       });
     });
 
@@ -303,6 +314,20 @@ export class GameEngine {
         });
       }
     });
+
+    // -----------------------------------------------------------------------
+    // Ping/RTT measurement for lag compensation
+    // -----------------------------------------------------------------------
+    room.onMessage('pong', (data: { clientTime: number }) => {
+      const rtt = performance.now() - data.clientTime;
+      room.send('rtt', { rtt });
+    });
+
+    // Send first ping immediately so RTT is available before first shot
+    room.send('ping', { clientTime: performance.now() });
+    this.pingIntervalId = setInterval(() => {
+      room.send('ping', { clientTime: performance.now() });
+    }, 2000);
 
     // -----------------------------------------------------------------------
     // Schema callback proxy
@@ -595,9 +620,8 @@ export class GameEngine {
       cb.state.vy = advanced.vy;
       cb.state.age = advanced.age;
 
-      // Decay error
-      cb.error.dx *= CORRECTION_DECAY;
-      cb.error.dy *= CORRECTION_DECAY;
+      cb.error.dx *= 0.85;
+      cb.error.dy *= 0.85;
     });
 
     for (const id of bulletsToRemove) {
@@ -630,20 +654,30 @@ export class GameEngine {
       state.angle = latest.angle;
       state.speed = latest.speed;
     } else {
-      // Lerp between snaps[i] and snaps[i+1]
       const a = snaps[i];
       const b = snaps[i + 1];
       const span = b.time - a.time;
       const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - a.time) / span)) : 1;
 
-      state.x = a.x + (b.x - a.x) * t;
-      state.y = a.y + (b.y - a.y) * t;
+      // Cubic Hermite interpolation — uses 4 snapshots when available for smooth
+      // acceleration/deceleration curves instead of velocity discontinuities.
+      // Falls back to linear lerp when only 2 snapshots are available.
+      const p0 = i > 0 ? snaps[i - 1] : null;
+      const p3 = i + 2 < snaps.length ? snaps[i + 2] : null;
+
+      const spanPrev = p0 ? a.time - p0.time : 0;
+      const spanNext = p3 ? p3.time - b.time : 0;
+
+      state.x = hermiteLerp(p0?.x ?? null, a.x, b.x, p3?.x ?? null, t, spanPrev, span, spanNext);
+      state.y = hermiteLerp(p0?.y ?? null, a.y, b.y, p3?.y ?? null, t, spanPrev, span, spanNext);
+
+      // Angle always uses shortest-path lerp (Hermite on angles can overshoot badly)
       state.angle = a.angle + shortestAngleDelta(b.angle, a.angle) * t;
       state.speed = b.speed;
     }
 
-    // Prune old snapshots (keep at least 2)
-    while (snaps.length > 2 && snaps[1].time < renderTime) {
+    // Prune old snapshots (keep at least 4 for Hermite interpolation)
+    while (snaps.length > 4 && snaps[2].time < renderTime) {
       snaps.shift();
     }
   }
@@ -853,6 +887,10 @@ export class GameEngine {
   destroy(): void {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
+    }
+    if (this.pingIntervalId !== null) {
+      clearInterval(this.pingIntervalId);
+      this.pingIntervalId = null;
     }
     this.inputHandler.detach();
     void this.room?.leave();

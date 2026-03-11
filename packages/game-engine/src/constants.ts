@@ -36,12 +36,17 @@ export const LIVES_PER_GAME = 5;
 export const LIVES_PER_TEST_GAME = 2;  // used by dev test-game mode
 export const SERVER_TICK_HZ = 60;
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;
-export const CORRECTION_DECAY = 0.9;         // per physics step — error *= 0.9, i.e. 10% removed each step
-export const REMOTE_INTERP_DELAY_MS = 200;   // render remote tank 200ms in the past
+export const CORRECTION_DECAY = 0.92;        // per physics step — error *= 0.92, ~8% removed each step (~95% settled in ~350ms)
+export const BULLET_CORRECTION_DECAY = 0.85; // bullets correct faster (~95% settled in ~170ms)
+export const REMOTE_INTERP_DELAY_MS = 400;   // render remote tank 400ms in the past
 export const BULLET_FADE_SECONDS = 0.25;     // fade out over the last N seconds of lifetime
 export const TRACK_LIFETIME_MS = 2000;       // tank tracks visible for 2 seconds
 export const TRACK_SPACING = 8;              // px — minimum distance between track marks
 export const BULLET_FIRE_COOLDOWN_MS = 200;  // min ms between shots per tank
+
+// Lag compensation
+export const POSITION_HISTORY_SIZE = 128;       // ring buffer capacity (~2s at 60Hz)
+export const LAG_COMP_MAX_REWIND_MS = 600;      // max rewind cap to prevent abuse
 
 // Room lifecycle
 export const GAME_END_DISCONNECT_DELAY_MS = 5000;  // ms — delay before disposing room after game ends

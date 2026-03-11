@@ -433,3 +433,50 @@ export function shortestAngleDelta(to: number, from: number): number {
   if (d > 180) d -= 360;
   return d;
 }
+
+/**
+ * Cubic Hermite interpolation between two values using surrounding points
+ * for tangent estimation. Falls back to linear lerp when neighbors are missing.
+ *
+ * @param prev  - value at point before `a` (null if unavailable)
+ * @param a     - value at start of segment
+ * @param b     - value at end of segment
+ * @param next  - value at point after `b` (null if unavailable)
+ * @param t     - interpolation factor [0, 1] within the a→b segment
+ * @param spanPrev - time span from prev to a (ignored if prev is null)
+ * @param spanAB   - time span from a to b
+ * @param spanNext - time span from b to next (ignored if next is null)
+ */
+export function hermiteLerp(
+  prev: number | null,
+  a: number,
+  b: number,
+  next: number | null,
+  t: number,
+  spanPrev: number,
+  spanAB: number,
+  spanNext: number,
+): number {
+  if (prev === null || next === null) {
+    // Linear lerp fallback
+    return a + (b - a) * t;
+  }
+
+  // Estimate tangents using finite differences, scaled to segment duration
+  const slopePrevA = spanPrev > 0 ? (a - prev) / spanPrev : 0;
+  const slopeAB = spanAB > 0 ? (b - a) / spanAB : 0;
+  const slopeBNext = spanNext > 0 ? (next - b) / spanNext : 0;
+
+  const mA = spanAB * 0.5 * (slopePrevA + slopeAB);
+  const mB = spanAB * 0.5 * (slopeAB + slopeBNext);
+
+  // Hermite basis functions
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+
+  return h00 * a + h10 * mA + h01 * b + h11 * mB;
+}

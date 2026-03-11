@@ -7,6 +7,9 @@ import {
   MAZE_ROWS,
   CELL_SIZE,
   LIVES_PER_GAME,
+  POSITION_HISTORY_SIZE,
+  LAG_COMP_MAX_REWIND_MS,
+  REMOTE_INTERP_DELAY_MS,
 } from '@tankbet/game-engine/constants';
 import {
   updateTank,
@@ -26,6 +29,14 @@ import type { Maze } from '@tankbet/game-engine/maze';
 interface InputMessage {
   keys: InputState;
   tick: number;
+}
+
+interface PositionHistoryEntry {
+  tick: number;
+  time: number;
+  x: number;
+  y: number;
+  angle: number;
 }
 
 export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
@@ -49,6 +60,13 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   // Event-driven bullets — full physics state stored server-side, events broadcast to clients
   protected bullets: BulletState[] = [];
 
+  // Lag compensation — position history ring buffer per session
+  protected positionHistory = new Map<string, PositionHistoryEntry[]>();
+  protected clientRtt = new Map<string, number>();
+  private serverTick = 0;
+  // Reverse lookup: userId → sessionId (for finding shooter's session from bullet.ownerId)
+  protected userIdToSession = new Map<string, string>();
+
   protected initRoom(): void {
     this.state = new TankRoomState();
 
@@ -69,12 +87,24 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       this.lastClientTick.set(client.sessionId, message.tick);
       this.ticksSinceInput.set(client.sessionId, 1);
     });
+
+    // Lag compensation: ping/pong RTT measurement
+    this.onMessage('ping', (client: Client, data: { clientTime: number }) => {
+      client.send('pong', { clientTime: data.clientTime });
+    });
+
+    this.onMessage('rtt', (client: Client, data: { rtt: number }) => {
+      // Clamp to reasonable range
+      const rtt = Math.max(0, Math.min(data.rtt, 2000));
+      this.clientRtt.set(client.sessionId, rtt);
+    });
   }
 
   protected spawnPlayer(client: Client, userId: string): void {
     const playerIdx: 0 | 1 = this.playerCount === 0 ? 0 : 1;
     this.playerCount++;
     this.sessionToUserId.set(client.sessionId, userId);
+    this.userIdToSession.set(userId, client.sessionId);
     this.sessionToPlayerIdx.set(client.sessionId, playerIdx);
 
     if (!this.maze) return;
@@ -110,9 +140,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallSegments = mazeToSegments(this.maze);
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
 
-    // Clear all projectiles
+    // Clear all projectiles and lag comp history (tanks teleport to new positions)
     this.bullets = [];
     this.lastFiredAt.clear();
+    this.positionHistory.clear();
     this.broadcast('bullet:clear');
 
     // Pick new random spawn positions for the fresh maze
@@ -137,10 +168,46 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
   protected abstract onBulletHitTank(killedSessionId: string): void;
 
+  private getRewindPosition(sessionId: string, rewindMs: number): { x: number; y: number; angle: number } | null {
+    const history = this.positionHistory.get(sessionId);
+    if (!history || history.length === 0) return null;
+
+    const targetTime = Date.now() - rewindMs;
+
+    // If target time is before all history, use earliest entry
+    if (targetTime <= history[0].time) {
+      return { x: history[0].x, y: history[0].y, angle: history[0].angle };
+    }
+
+    // If target time is after all history, use latest entry (no rewind needed)
+    if (targetTime >= history[history.length - 1].time) {
+      const last = history[history.length - 1];
+      return { x: last.x, y: last.y, angle: last.angle };
+    }
+
+    // Find bracketing entries and interpolate
+    for (let i = history.length - 1; i > 0; i--) {
+      if (history[i - 1].time <= targetTime && history[i].time >= targetTime) {
+        const a = history[i - 1];
+        const b = history[i];
+        const span = b.time - a.time;
+        const t = span > 0 ? (targetTime - a.time) / span : 1;
+        return {
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+          angle: a.angle + (b.angle - a.angle) * t,
+        };
+      }
+    }
+
+    return null;
+  }
+
   private tick(_dt: number): void {
     // Use fixed timestep to match client prediction exactly
     const dt = 1 / SERVER_TICK_HZ;
     if (this.state.phase !== 'playing') return;
+    this.serverTick++;
 
     // 1. Process pending inputs → move tanks first, then fire.
     // Moving before firing ensures the bullet spawns from the barrel's
@@ -172,6 +239,17 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.angle = Math.fround(shielded.angle);
       tank.speed = Math.fround(updated.speed);
 
+      // Record position history for lag compensation
+      const history = this.positionHistory.get(sessionId);
+      if (history) {
+        history.push({ tick: this.serverTick, time: Date.now(), x: tank.x, y: tank.y, angle: tank.angle });
+        if (history.length > POSITION_HISTORY_SIZE) {
+          history.splice(0, history.length - POSITION_HISTORY_SIZE);
+        }
+      } else {
+        this.positionHistory.set(sessionId, [{ tick: this.serverTick, time: Date.now(), x: tank.x, y: tank.y, angle: tank.angle }]);
+      }
+
       // Estimate which client tick we've caught up to:
       // lastClientTick (from last input message) + server ticks processed since
       const baseTick = this.lastClientTick.get(sessionId) ?? 0;
@@ -198,6 +276,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         if (bulletState) {
           this.lastFiredAt.set(sessionId, now);
           this.bullets.push(bulletState);
+          // Echo fireTick so client can match this bullet to its saved barrel tip
+          const fireTick = this.lastClientTick.get(sessionId) ?? 0;
           this.broadcast('bullet:fire', {
             id: bulletState.id,
             ownerId: bulletState.ownerId,
@@ -205,6 +285,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
             y: bulletState.y,
             vx: bulletState.vx,
             vy: bulletState.vy,
+            fireTick,
           });
         }
       }
@@ -238,9 +319,29 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       }
 
       let hitTank = false;
+      // Determine shooter's session for lag compensation
+      const shooterSessionId = this.userIdToSession.get(advanced.ownerId) ?? '';
+      const shooterRtt = this.clientRtt.get(shooterSessionId) ?? 0;
+      const rewindMs = Math.min(REMOTE_INTERP_DELAY_MS + shooterRtt / 2, LAG_COMP_MAX_REWIND_MS);
+
       this.state.tanks.forEach((tank, sessionId) => {
         if (hitTank || !tank.alive) return;
-        const ts: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
+
+        // For the target tank (not the shooter), use rewound position
+        let targetX = tank.x;
+        let targetY = tank.y;
+        let targetAngle = tank.angle;
+
+        if (sessionId !== shooterSessionId && rewindMs > 0) {
+          const rewound = this.getRewindPosition(sessionId, rewindMs);
+          if (rewound) {
+            targetX = rewound.x;
+            targetY = rewound.y;
+            targetAngle = rewound.angle;
+          }
+        }
+
+        const ts: TankState = { id: tank.id, x: targetX, y: targetY, angle: targetAngle, speed: 0 };
         if (checkBulletTankCollision(advanced, ts, this.wallSegments)) {
           hitTank = true;
           bulletsToRemove.push(advanced.id);

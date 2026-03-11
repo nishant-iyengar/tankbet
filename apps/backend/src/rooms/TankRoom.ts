@@ -78,8 +78,16 @@ export class TankRoom extends BaseTankRoom {
       this.state.tanks.delete(existingSessionId);
       this.state.lives.delete(existingSessionId);
       this.pendingInputs.delete(existingSessionId);
+      // Remap lag compensation state
+      const oldHistory = this.positionHistory.get(existingSessionId);
+      this.positionHistory.delete(existingSessionId);
+      if (oldHistory) this.positionHistory.set(client.sessionId, oldHistory);
+      const oldRtt = this.clientRtt.get(existingSessionId);
+      this.clientRtt.delete(existingSessionId);
+      if (oldRtt !== undefined) this.clientRtt.set(client.sessionId, oldRtt);
 
       this.sessionToUserId.set(client.sessionId, auth.userId);
+      this.userIdToSession.set(auth.userId, client.sessionId);
       if (playerIdx !== undefined) this.sessionToPlayerIdx.set(client.sessionId, playerIdx);
       if (tank !== undefined) this.state.tanks.set(client.sessionId, tank);
       if (lives !== undefined) this.state.lives.set(client.sessionId, lives);
@@ -106,6 +114,8 @@ export class TankRoom extends BaseTankRoom {
       this.state.tanks.delete(client.sessionId);
       this.state.lives.delete(client.sessionId);
       this.pendingInputs.delete(client.sessionId);
+      this.positionHistory.delete(client.sessionId);
+      this.clientRtt.delete(client.sessionId);
       this.playerCount--;
       return;
     }
@@ -153,6 +163,8 @@ export class TankRoom extends BaseTankRoom {
     this.state.tanks.delete(client.sessionId);
     this.state.lives.delete(client.sessionId);
     this.pendingInputs.delete(client.sessionId);
+    this.positionHistory.delete(client.sessionId);
+    this.clientRtt.delete(client.sessionId);
     this.playerCount--;
   }
 

@@ -26,7 +26,6 @@ function NetworkSimPanel({
   onSimStateChange: (active: boolean, latency: number, jitter: number) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const [enabled, setEnabled] = useState(false);
   const [latency, setLatency] = useState(0);
   const [jitter, setJitter] = useState(0);
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -62,40 +61,36 @@ function NetworkSimPanel({
     }
   }, []);
 
-  const handleToggle = useCallback(() => {
-    const next = !enabled;
-    setEnabled(next);
-    if (next) {
-      onWsUrlChange('ws://localhost:3002');
-      void updateToxic({ latency, jitter });
-      onSimStateChange(true, latency, jitter);
-    } else {
-      const defaultUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
-      onWsUrlChange(defaultUrl);
-      onSimStateChange(false, 0, 0);
-    }
-  }, [enabled, latency, jitter, onWsUrlChange, updateToxic, onSimStateChange]);
+  const applySimState = useCallback(
+    (newLatency: number, newJitter: number) => {
+      const active = newLatency > 0 || newJitter > 0;
+      if (active) {
+        onWsUrlChange('ws://localhost:3002');
+        void updateToxic({ latency: newLatency, jitter: newJitter });
+        onSimStateChange(true, newLatency, newJitter);
+      } else {
+        const defaultUrl = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
+        onWsUrlChange(defaultUrl);
+        onSimStateChange(false, 0, 0);
+      }
+    },
+    [onWsUrlChange, updateToxic, onSimStateChange],
+  );
 
   const handleLatencyChange = useCallback(
     (value: number) => {
       setLatency(value);
-      if (enabled) {
-        void updateToxic({ latency: value, jitter });
-        onSimStateChange(true, value, jitter);
-      }
+      applySimState(value, jitter);
     },
-    [enabled, jitter, updateToxic, onSimStateChange],
+    [jitter, applySimState],
   );
 
   const handleJitterChange = useCallback(
     (value: number) => {
       setJitter(value);
-      if (enabled) {
-        void updateToxic({ latency, jitter: value });
-        onSimStateChange(true, latency, value);
-      }
+      applySimState(latency, value);
     },
-    [enabled, latency, updateToxic, onSimStateChange],
+    [latency, applySimState],
   );
 
   if (!open) {
@@ -128,52 +123,40 @@ function NetworkSimPanel({
         </p>
       )}
 
-      <label className="flex items-center gap-2 mb-4 cursor-pointer">
+      {updating && <span className="text-slate-500 text-xs mb-2 block">updating…</span>}
+
+      <div className="mb-3">
+        <div className="flex justify-between text-slate-400 mb-1">
+          <span>Latency</span>
+          <span className="tabular-nums">{latency}ms</span>
+        </div>
         <input
-          type="checkbox"
-          checked={enabled}
-          onChange={handleToggle}
+          type="range"
+          min={0}
+          max={500}
+          step={10}
+          value={latency}
+          onChange={(e) => handleLatencyChange(Number(e.target.value))}
           disabled={available === false}
-          className="accent-cyan-400"
+          className="w-full accent-cyan-400"
         />
-        <span className={enabled ? 'text-cyan-400' : 'text-slate-400'}>
-          {enabled ? 'Enabled' : 'Disabled'}
-        </span>
-        {updating && <span className="text-slate-500 text-xs">updating…</span>}
-      </label>
+      </div>
 
-      <div className={enabled ? '' : 'opacity-40 pointer-events-none'}>
-        <div className="mb-3">
-          <div className="flex justify-between text-slate-400 mb-1">
-            <span>Latency</span>
-            <span className="tabular-nums">{latency}ms</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={500}
-            step={10}
-            value={latency}
-            onChange={(e) => handleLatencyChange(Number(e.target.value))}
-            className="w-full accent-cyan-400"
-          />
+      <div>
+        <div className="flex justify-between text-slate-400 mb-1">
+          <span>Jitter</span>
+          <span className="tabular-nums">{jitter}ms</span>
         </div>
-
-        <div>
-          <div className="flex justify-between text-slate-400 mb-1">
-            <span>Jitter</span>
-            <span className="tabular-nums">{jitter}ms</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={5}
-            value={jitter}
-            onChange={(e) => handleJitterChange(Number(e.target.value))}
-            className="w-full accent-cyan-400"
-          />
-        </div>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={jitter}
+          onChange={(e) => handleJitterChange(Number(e.target.value))}
+          disabled={available === false}
+          className="w-full accent-cyan-400"
+        />
       </div>
     </div>
   );
