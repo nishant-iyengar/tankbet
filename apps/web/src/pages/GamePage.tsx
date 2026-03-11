@@ -7,6 +7,7 @@ import type { SeatReservation } from '../game/GameEngine';
 import { CELL_SIZE, MAZE_COLS, MAZE_ROWS } from '@tankbet/game-engine/constants';
 import { useMobile } from '../hooks/useMobile';
 import { ErrorAlert } from '../components/ErrorAlert';
+import { reconnectStorageKey, storeReconnectToken, clearReconnectToken } from '../utils/reconnectStorage';
 
 interface GameData {
   id: string;
@@ -16,24 +17,6 @@ interface GameData {
   loserId: string | null;
   creator: { id: string; username: string };
   opponent: { id: string; username: string } | null;
-}
-
-function reconnectStorageKey(gameId: string): string {
-  return `tankbet:reconnect:${gameId}`;
-}
-
-function reconnectTimestampKey(gameId: string): string {
-  return `tankbet:reconnect-ts:${gameId}`;
-}
-
-function storeReconnectToken(gameId: string, token: string): void {
-  localStorage.setItem(reconnectStorageKey(gameId), token);
-  localStorage.setItem(reconnectTimestampKey(gameId), String(Date.now()));
-}
-
-function clearReconnectToken(gameId: string): void {
-  localStorage.removeItem(reconnectStorageKey(gameId));
-  localStorage.removeItem(reconnectTimestampKey(gameId));
 }
 
 function GameResultsOverlay({
@@ -165,8 +148,7 @@ export function GamePage(): React.JSX.Element {
               game.opponent.username,
             );
             connected = true;
-          } catch (reconnectErr) {
-            console.log('Reconnection failed, falling back to fresh join:', reconnectErr);
+          } catch {
             clearReconnectToken(gameId);
           }
         }

@@ -34,11 +34,6 @@ export interface GameHistoryEntry {
   createdAt: string;
 }
 
-export interface GameHistoryFilters {
-  status?: GameStatus;
-  result?: 'WON' | 'LOST';
-}
-
 export interface GameHistoryResponse {
   entries: GameHistoryEntry[];
   nextCursor: string | null;

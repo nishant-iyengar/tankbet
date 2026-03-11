@@ -12,6 +12,7 @@ import {
   collideTankWithEndpoints,
   extractWallEndpoints,
   hermiteLerp,
+  checkBulletTankCollision,
 } from '@tankbet/game-engine/physics';
 import type { LineSegment } from '@tankbet/game-engine/maze';
 import {
@@ -232,7 +233,6 @@ export class GameEngine {
     this.setupRoom(room);
     // Request maze + bullet state now that message handlers are registered
     room.send('request:state');
-    console.log('[GameEngine] reconnect complete', { sessionId: room.sessionId });
   }
 
   getReconnectionToken(): string | null {
@@ -247,7 +247,6 @@ export class GameEngine {
     // Maze message
     // -----------------------------------------------------------------------
     room.onMessage('maze', (data: { segments: LineSegment[] }) => {
-      console.log('[GameEngine] maze received, segments:', data.segments.length);
       this.setMazeSegments(data.segments);
     });
 
@@ -304,14 +303,32 @@ export class GameEngine {
     });
 
     room.onMessage('bullet:sync', (bullets: BulletState[]) => {
-      this.activeBullets.clear();
+      const serverIds = new Set<string>();
       for (const b of bullets) {
-        this.activeBullets.set(b.id, {
-          state: { ...b },
-          error: { dx: 0, dy: 0 },
-          prevX: b.x,
-          prevY: b.y,
-        });
+        serverIds.add(b.id);
+        const existing = this.activeBullets.get(b.id);
+        if (existing) {
+          // Smooth correction: compute visual error offset, snap physics to server
+          const oldVisualX = existing.state.x + existing.error.dx;
+          const oldVisualY = existing.state.y + existing.error.dy;
+          existing.state = { ...b };
+          existing.error.dx = oldVisualX - b.x;
+          existing.error.dy = oldVisualY - b.y;
+        } else {
+          // New bullet we didn't know about
+          this.activeBullets.set(b.id, {
+            state: { ...b },
+            error: { dx: 0, dy: 0 },
+            prevX: b.x,
+            prevY: b.y,
+          });
+        }
+      }
+      // Remove bullets the server no longer has
+      for (const id of this.activeBullets.keys()) {
+        if (!serverIds.has(id)) {
+          this.activeBullets.delete(id);
+        }
       }
     });
 
@@ -340,7 +357,6 @@ export class GameEngine {
     // Tank schema callbacks — split local vs remote
     // -----------------------------------------------------------------------
     $.tanks.onAdd((tank, sessionId) => {
-      console.log('[GameEngine] tank onAdd', { sessionId, isLocal: sessionId === this.localSessionId, alive: tank.alive, x: tank.x, y: tank.y });
       this.tankAliveState.set(sessionId, tank.alive);
 
       if (sessionId === this.localSessionId) {
@@ -482,8 +498,6 @@ export class GameEngine {
       const alive = this.tankAliveState.get(this.localSessionId);
       if (alive) {
         this.room?.send('input', { keys, tick: this.clientTick });
-      } else {
-        console.log('[GameEngine] input blocked — tank not alive', { localSessionId: this.localSessionId, aliveState: this.tankAliveState });
       }
     });
 

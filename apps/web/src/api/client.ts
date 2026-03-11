@@ -28,9 +28,10 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' })) as { error: string };
-    throw new Error(error.error ?? `HTTP ${response.status}`);
+    const body: { error?: string } = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(body.error ?? `HTTP ${response.status}`);
   }
 
+  // The caller is responsible for ensuring T matches the response shape
   return response.json() as Promise<T>;
 }

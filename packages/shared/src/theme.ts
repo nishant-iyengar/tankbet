@@ -23,8 +23,4 @@ export const colors = {
   text:          '#f1f5f9',
   textSecondary: '#94a3b8',
   textMuted:     '#64748b',
-
-  // Aliases kept for any legacy references
-  error:         '#f87171',
-  success:       '#4ade80',
 } as const;

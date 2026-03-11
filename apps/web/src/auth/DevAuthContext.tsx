@@ -22,14 +22,29 @@ export interface DevAuthState {
 
 export const DevAuthContext = createContext<DevAuthState | null>(null);
 
-function loadDevUser(): DevUser | null {
+function isDevUser(value: unknown): value is DevUser {
+  if (typeof value !== 'object' || value === null) return false;
+  return (
+    'id' in value && typeof value.id === 'string' &&
+    'clerkId' in value && typeof value.clerkId === 'string' &&
+    'username' in value && typeof value.username === 'string' &&
+    'phoneNumber' in value && typeof value.phoneNumber === 'string'
+  );
+}
+
+function parseDevUser(json: string): DevUser | null {
   try {
-    const stored = localStorage.getItem(DEV_AUTH_KEY);
-    if (!stored) return null;
-    return JSON.parse(stored) as DevUser;
+    const parsed: unknown = JSON.parse(json);
+    return isDevUser(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function loadDevUser(): DevUser | null {
+  const stored = localStorage.getItem(DEV_AUTH_KEY);
+  if (!stored) return null;
+  return parseDevUser(stored);
 }
 
 export function DevAuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
@@ -39,7 +54,7 @@ export function DevAuthProvider({ children }: { children: ReactNode }): React.JS
   useEffect(() => {
     function onStorage(e: StorageEvent): void {
       if (e.key === DEV_AUTH_KEY) {
-        setDevUserState(e.newValue ? (JSON.parse(e.newValue) as DevUser) : null);
+        setDevUserState(e.newValue ? parseDevUser(e.newValue) : null);
       }
     }
     window.addEventListener('storage', onStorage);

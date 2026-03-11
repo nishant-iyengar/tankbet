@@ -265,7 +265,6 @@ export function drawHUD(
 
   // Player 2 — top right
   if (player2Name) {
-    ctx.font = HUD_FONT;
     ctx.fillStyle = TANK_COLOR_P2;
     ctx.textAlign = 'right';
     const p2Hearts = '\u2665'.repeat(player2Lives);

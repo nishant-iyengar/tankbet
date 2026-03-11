@@ -12,33 +12,7 @@ import { LoginPage } from './pages/LoginPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { DevGamePage } from './pages/DevGamePage';
 import { useMobile } from './hooks/useMobile';
-import { GRACE_PERIOD_SECONDS } from '@tankbet/game-engine/constants';
-
-const RECONNECT_KEY_PREFIX = 'tankbet:reconnect:';
-const RECONNECT_TIMESTAMP_PREFIX = 'tankbet:reconnect-ts:';
-
-/** Remove stale reconnection tokens from localStorage on app startup. */
-function sweepStaleReconnectTokens(): void {
-  const maxAge = GRACE_PERIOD_SECONDS * 1000;
-  const now = Date.now();
-  const keysToRemove: string[] = [];
-
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key?.startsWith(RECONNECT_TIMESTAMP_PREFIX)) continue;
-
-    const ts = Number(localStorage.getItem(key));
-    if (Number.isNaN(ts) || now - ts > maxAge) {
-      const gameId = key.slice(RECONNECT_TIMESTAMP_PREFIX.length);
-      keysToRemove.push(key);
-      keysToRemove.push(RECONNECT_KEY_PREFIX + gameId);
-    }
-  }
-
-  for (const key of keysToRemove) {
-    localStorage.removeItem(key);
-  }
-}
+import { sweepStaleReconnectTokens } from './utils/reconnectStorage';
 
 export function App(): React.JSX.Element {
   useEffect(() => {

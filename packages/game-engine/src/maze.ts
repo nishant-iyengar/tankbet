@@ -131,11 +131,11 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
   for (let i = remainingKeys.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
     const tmp = remainingKeys[i];
-    remainingKeys[i] = remainingKeys[j] as string;
-    remainingKeys[j] = tmp as string;
+    remainingKeys[i] = remainingKeys[j]!;
+    remainingKeys[j] = tmp!;
   }
   for (let i = 0; i < removeCount; i++) {
-    allWalls.delete(remainingKeys[i] as string);
+    allWalls.delete(remainingKeys[i]!);
   }
 
   // Convert remaining wall keys back to Wall objects

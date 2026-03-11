@@ -19,6 +19,16 @@ export class TankRoom extends BaseTankRoom {
   private firstDeathSessionId: string | null = null;
   private tieWindowHandle: { clear(): void } | null = null;
 
+  /** Remove all state associated with a session. */
+  private cleanupSession(sessionId: string): void {
+    this.sessionToUserId.delete(sessionId);
+    this.state.tanks.delete(sessionId);
+    this.state.lives.delete(sessionId);
+    this.pendingInputs.delete(sessionId);
+    this.positionHistory.delete(sessionId);
+    this.clientRtt.delete(sessionId);
+  }
+
   /** Return the session ID of the other player (the one that isn't `sessionId`). */
   private getOpponentSessionId(sessionId: string): string {
     for (const [sid] of this.state.tanks) {
@@ -110,12 +120,7 @@ export class TankRoom extends BaseTankRoom {
     const activePhases = ['playing', 'countdown', 'resolving'];
     if (!activePhases.includes(this.state.phase)) {
       // Not in an active game phase — just clean up like a normal leave
-      this.sessionToUserId.delete(client.sessionId);
-      this.state.tanks.delete(client.sessionId);
-      this.state.lives.delete(client.sessionId);
-      this.pendingInputs.delete(client.sessionId);
-      this.positionHistory.delete(client.sessionId);
-      this.clientRtt.delete(client.sessionId);
+      this.cleanupSession(client.sessionId);
       this.playerCount--;
       return;
     }
@@ -159,12 +164,7 @@ export class TankRoom extends BaseTankRoom {
   onLeave(client: Client): void {
     // onLeave fires only for consented/intentional leaves (e.g. forfeit, leaving waiting room).
     // During active games, unexpected disconnects go through onDrop instead.
-    this.sessionToUserId.delete(client.sessionId);
-    this.state.tanks.delete(client.sessionId);
-    this.state.lives.delete(client.sessionId);
-    this.pendingInputs.delete(client.sessionId);
-    this.positionHistory.delete(client.sessionId);
-    this.clientRtt.delete(client.sessionId);
+    this.cleanupSession(client.sessionId);
     this.playerCount--;
   }
 

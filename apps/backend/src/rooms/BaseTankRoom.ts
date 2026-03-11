@@ -342,7 +342,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         }
 
         const ts: TankState = { id: tank.id, x: targetX, y: targetY, angle: targetAngle, speed: 0 };
-        if (checkBulletTankCollision(advanced, ts, this.wallSegments)) {
+        const dx = advanced.x - targetX;
+        const dy = advanced.y - targetY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const collisionResult = checkBulletTankCollision(advanced, ts, this.wallSegments);
+        if (collisionResult) {
           hitTank = true;
           bulletsToRemove.push(advanced.id);
           this.onBulletHitTank(sessionId);
@@ -362,6 +366,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       for (const id of bulletsToRemove) {
         this.broadcast('bullet:remove', { id });
       }
+    }
+
+    // Periodic bullet position sync — correct client-side drift between bounces
+    if (this.serverTick % 6 === 0 && this.bullets.length > 0) {
+      this.broadcast('bullet:sync', this.bullets);
     }
 
     // Patches are sent automatically by Colyseus at patchRate (~30Hz / 33ms).

@@ -4,7 +4,6 @@ export type {
   PublicUser,
   GameInvitePreview,
   GameHistoryEntry,
-  GameHistoryFilters,
   GameHistoryResponse,
   ActiveGameInfo,
 } from './types';

@@ -87,12 +87,16 @@ export function HistoryPage(): React.JSX.Element {
     void loadEntries();
   }, [loadEntries]);
 
-  function handleStatusChange(value: string): void {
-    setStatusFilter(value as GameStatus | '');
+  function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>): void {
+    const value = e.target.value;
+    const valid = STATUS_OPTIONS.find((o) => o.value === value);
+    if (valid) setStatusFilter(valid.value);
   }
 
-  function handleResultChange(value: string): void {
-    setResultFilter(value as 'WON' | 'LOST' | '');
+  function handleResultChange(e: React.ChangeEvent<HTMLSelectElement>): void {
+    const value = e.target.value;
+    const valid = RESULT_OPTIONS.find((o) => o.value === value);
+    if (valid) setResultFilter(valid.value);
   }
 
   return (
@@ -106,7 +110,7 @@ export function HistoryPage(): React.JSX.Element {
       <div className="flex gap-3 mb-5 flex-wrap">
         <select
           value={statusFilter}
-          onChange={(e) => handleStatusChange(e.target.value)}
+          onChange={handleStatusChange}
           className={selectClass}
         >
           {STATUS_OPTIONS.map((opt) => (
@@ -116,7 +120,7 @@ export function HistoryPage(): React.JSX.Element {
 
         <select
           value={resultFilter}
-          onChange={(e) => handleResultChange(e.target.value)}
+          onChange={handleResultChange}
           className={selectClass}
         >
           {RESULT_OPTIONS.map((opt) => (
