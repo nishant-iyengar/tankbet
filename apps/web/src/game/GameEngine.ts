@@ -168,8 +168,10 @@ export class GameEngine {
   private lastFrameTime = 0;
   private accumulator = 0;
 
-  // Set when a new maze arrives — forces next local tank update to snap instead of lerp
+  // Set when a new maze arrives — forces next local tank update to snap instead of lerp.
+  // Only set on battle transitions (not the initial maze setup, which onAdd handles).
   private snapNextLocalUpdate = false;
+  private hasReceivedFirstMaze = false;
 
   // Ping/RTT measurement for lag compensation
   private pingIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -360,12 +362,16 @@ export class GameEngine {
       this.tankAliveState.set(sessionId, tank.alive);
 
       if (sessionId === this.localSessionId) {
-        // Initialize local prediction state
+        // Initialize local prediction state — also clear snapNextLocalUpdate
+        // since onAdd already snaps to the correct position. Leaving the flag
+        // set would cause a visual jolt on the first movement: the client
+        // predicts ahead, then onChange hard-snaps back to the server position.
         this.localPhysics = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
         this.localPrevPhysics = { x: tank.x, y: tank.y, angle: tank.angle };
         this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
         this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
         this.predictionBuffer = [];
+        this.snapNextLocalUpdate = false;
 
         const tankProxy = getCallbacks(tank);
         tankProxy.onChange(() => {
@@ -867,13 +873,17 @@ export class GameEngine {
 
     // New maze means new battle — reset interpolation state so tanks snap
     // to their new spawn positions instead of lerping from the old maze.
+    // Skip on the initial maze (onAdd handles that); only snap on battle transitions.
     if (this.remoteTankState) {
       this.remoteTankState.snapshots = [];
     }
     this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
     this.localPrevError = { dx: 0, dy: 0, dAngle: 0 };
     this.predictionBuffer = [];
-    this.snapNextLocalUpdate = true;
+    if (this.hasReceivedFirstMaze) {
+      this.snapNextLocalUpdate = true;
+    }
+    this.hasReceivedFirstMaze = true;
 
     this.rebuildMazeCanvas();
   }
