@@ -140,7 +140,7 @@ export class GameEngine {
   private onPhaseChange: ((phase: string, winnerId: string, roundWinnerId: string) => void) | null = null;
   private localSessionId = '';
   private isPractice = false;
-  private explosions: Array<{ x: number; y: number; startTime: number }> = [];
+  private explosions: Array<{ x: number; y: number; startTime: number; color: string }> = [];
 
   // --- Local tank (client-side prediction) ---
   private localPhysics: TankState = { id: '', x: 0, y: 0, angle: 0, speed: 0 };
@@ -378,7 +378,8 @@ export class GameEngine {
           // Detect alive state transitions
           const wasAlive = this.tankAliveState.get(sessionId);
           if (wasAlive === true && !tank.alive) {
-            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+            const localColor = [TANK_COLOR_P1, TANK_COLOR_P2][this.playerIndex];
+            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now(), color: localColor });
             // Reset input state so stale held-key inputs don't accumulate
             this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
             this.inputHandler.resetKeys();
@@ -422,7 +423,8 @@ export class GameEngine {
           // Detect alive state transitions
           const wasAlive = this.tankAliveState.get(sessionId);
           if (wasAlive === true && !tank.alive) {
-            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now() });
+            const remoteColor = [TANK_COLOR_P1, TANK_COLOR_P2][1 - this.playerIndex];
+            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now(), color: remoteColor });
           }
           const isRespawn = wasAlive === false && tank.alive;
           this.tankAliveState.set(sessionId, tank.alive);
@@ -477,6 +479,10 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     $.listen('phase', (value) => {
       this.currentPhase = value;
+      // Clear bullets when leaving playing phase so they don't linger on screen
+      if (value !== 'playing') {
+        this.activeBullets.clear();
+      }
       this.notifyPhaseChange();
     });
 
@@ -499,10 +505,11 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     this.inputHandler.attach(this.playerIndex, (keys: InputState) => {
       this.currentInput = keys;
-      // Don't send inputs while dead — prevents stale pendingInputs on the
-      // server that would move the tank before the client knows about respawn.
+      // Don't send inputs while dead or outside the playing phase — prevents
+      // stale pendingInputs on the server and avoids client-side prediction
+      // moving the tank during countdown (server ignores non-playing inputs).
       const alive = this.tankAliveState.get(this.localSessionId);
-      if (alive) {
+      if (alive && this.currentPhase === 'playing') {
         this.room?.send('input', { keys, tick: this.clientTick });
       }
     });
@@ -580,6 +587,10 @@ export class GameEngine {
   // -------------------------------------------------------------------------
 
   private physicsTick(): void {
+    // Skip all physics when not playing — matches server behavior exactly.
+    // Tanks and bullets freeze during countdown, resolving, and ended phases.
+    if (this.currentPhase !== 'playing') return;
+
     this.clientTick++;
 
     // --- Local tank prediction ---
@@ -804,13 +815,15 @@ export class GameEngine {
       const curVisY = cb.state.y + cb.error.dy;
       const bx = cb.prevX + (curVisX - cb.prevX) * alpha;
       const by = cb.prevY + (curVisY - cb.prevY) * alpha;
-      drawBullet(this.ctx, { ...cb.state, x: bx, y: by });
+      const bulletColorIdx = cb.state.ownerId === this.localPhysics.id ? this.playerIndex : 1 - this.playerIndex;
+      const bulletColor = [TANK_COLOR_P1, TANK_COLOR_P2][bulletColorIdx];
+      drawBullet(this.ctx, { ...cb.state, x: bx, y: by }, bulletColor);
     });
 
     // --- Explosions ---
     this.explosions = this.explosions.filter((exp) => now - exp.startTime < EXPLOSION_DURATION_MS);
     for (const exp of this.explosions) {
-      drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime);
+      drawExplosion(this.ctx, exp.x, exp.y, now - exp.startTime, exp.color);
     }
 
     // --- HUD ---

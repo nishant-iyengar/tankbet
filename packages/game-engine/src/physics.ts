@@ -144,7 +144,46 @@ function circleAABBOverlap(
   return dx * dx + dy * dy <= r * r;
 }
 
-export function checkBulletTankCollision(bullet: BulletState, tank: TankState, walls?: WallSegment[]): boolean {
+// Segment vs axis-aligned rect intersection (Liang-Barsky). Returns true if the
+// line segment from (x0,y0)→(x1,y1) intersects the AABB [minX,maxX]×[minY,maxY].
+function segmentAABBIntersects(
+  x0: number, y0: number, x1: number, y1: number,
+  minX: number, minY: number, maxX: number, maxY: number,
+): boolean {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  let tMin = 0;
+  let tMax = 1;
+
+  // Check each edge: left, right, bottom, top
+  const p = [-dx, dx, -dy, dy];
+  const q = [x0 - minX, maxX - x0, y0 - minY, maxY - y0];
+
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]!) < 1e-10) {
+      // Parallel to this edge — reject if outside
+      if (q[i]! < 0) return false;
+    } else {
+      const t = q[i]! / p[i]!;
+      if (p[i]! < 0) {
+        tMin = Math.max(tMin, t);
+      } else {
+        tMax = Math.min(tMax, t);
+      }
+      if (tMin > tMax) return false;
+    }
+  }
+
+  return true;
+}
+
+export function checkBulletTankCollision(
+  bullet: BulletState,
+  tank: TankState,
+  walls?: WallSegment[],
+  prevBulletX?: number,
+  prevBulletY?: number,
+): boolean {
   // Transform bullet into tank-local coordinates (tank at origin, angle 0)
   const rad = degreesToRadians(tank.angle);
   const cos = Math.cos(rad);
@@ -162,9 +201,23 @@ export function checkBulletTankCollision(bullet: BulletState, tank: TankState, w
   const halfH = TANK_HEIGHT / 2 - TANK_HITBOX_SHRINK;
 
   // Use BULLET_HIT_RADIUS (larger than visual) so near-hits connect — favors the shooter
-  if (!circleAABBOverlap(localX, localY, BULLET_HIT_RADIUS, -halfW, -halfH, halfW, halfH)) {
-    return false;
+  let hit = circleAABBOverlap(localX, localY, BULLET_HIT_RADIUS, -halfW, -halfH, halfW, halfH);
+
+  // Sweep test: if the point test missed, check whether the bullet's travel
+  // path (prevPosition → currentPosition) crossed through the tank hitbox.
+  // This catches fast pass-throughs that skip over the hitbox in one tick.
+  if (!hit && prevBulletX !== undefined && prevBulletY !== undefined) {
+    const prevRelX = prevBulletX - tank.x;
+    const prevRelY = prevBulletY - tank.y;
+    const prevLocalX = prevRelX * cos + prevRelY * sin;
+    const prevLocalY = -prevRelX * sin + prevRelY * cos;
+    hit = segmentAABBIntersects(
+      prevLocalX, prevLocalY, localX, localY,
+      -halfW, -halfH, halfW, halfH,
+    );
   }
+
+  if (!hit) return false;
 
   // Reject hit if a wall stands between bullet and tank center
   if (walls) {
@@ -183,17 +236,23 @@ export function canFireBullet(now: number, lastFiredAt: number, currentBulletCou
   return (now - lastFiredAt) >= BULLET_FIRE_COOLDOWN_MS && currentBulletCount < MAX_BULLETS_PER_TANK;
 }
 
-export function createBullet(id: string, tank: TankState, walls?: WallSegment[]): BulletState | null {
+export function createBullet(id: string, tank: TankState, walls?: WallSegment[]): BulletState {
   const rad = degreesToRadians(tank.angle);
   const spawnDist = BARREL_LENGTH + TANK_WIDTH / 2; // spawn half a tank length ahead of the tank
   const tipX = tank.x + Math.cos(rad) * spawnDist;
   const tipY = tank.y + Math.sin(rad) * spawnDist;
+  const vx = Math.cos(rad) * BULLET_SPEED;
+  const vy = Math.sin(rad) * BULLET_SPEED;
 
-  // If the barrel tip is through a wall (tank pressed against it), suppress the shot
+  // If the barrel tip is through a wall, reflect the bullet back immediately
+  // so it can't pass through — but still fires (allows self-kills).
   if (walls) {
     for (const wall of walls) {
-      const { crossed } = bulletCrossesWall(tank.x, tank.y, tipX, tipY, wall);
-      if (crossed) return null;
+      const { crossed, hitX, hitY } = bulletCrossesWall(tank.x, tank.y, tipX, tipY, wall);
+      if (crossed) {
+        const bullet: BulletState = { id, ownerId: tank.id, x: tipX, y: tipY, vx, vy, age: 0 };
+        return reflectBulletAtWall(bullet, wall, hitX, hitY);
+      }
     }
   }
 
@@ -202,16 +261,18 @@ export function createBullet(id: string, tank: TankState, walls?: WallSegment[])
     ownerId: tank.id,
     x: tipX,
     y: tipY,
-    vx: Math.cos(rad) * BULLET_SPEED,
-    vy: Math.sin(rad) * BULLET_SPEED,
+    vx,
+    vy,
     age: 0,
   };
 }
 
 export function clampTankToMaze(tank: TankState, mazeWidth: number, mazeHeight: number): TankState {
   const { rad, obb } = computeTankOBB(tank.angle);
-  const barrelX = BARREL_LENGTH * Math.cos(rad);
-  const barrelY = BARREL_LENGTH * Math.sin(rad);
+  // Barrel tip is BARREL_LENGTH past the body edge (TANK_WIDTH/2 from center)
+  const barrelTipDist = BARREL_LENGTH + TANK_WIDTH / 2;
+  const barrelX = barrelTipDist * Math.cos(rad);
+  const barrelY = barrelTipDist * Math.sin(rad);
   const rightExtent  = Math.max(obb, barrelX > 0 ?  barrelX : 0);
   const leftExtent   = Math.max(obb, barrelX < 0 ? -barrelX : 0);
   const bottomExtent = Math.max(obb, barrelY > 0 ?  barrelY : 0);
@@ -234,9 +295,11 @@ export function collideTankWithWalls(
   const { rad, cosA, sinA, obb } = computeTankOBB(tank.angle);
   const barrelDirX = Math.cos(rad);
   const barrelDirY = Math.sin(rad);
+  // Barrel tip is BARREL_LENGTH past the body edge (TANK_WIDTH/2 from center)
+  const barrelTipDist = BARREL_LENGTH + TANK_WIDTH / 2;
   // Pre-compute barrel extents used in range checks (hoisted out of per-wall loop)
-  const barrelExtX = Math.max(obb, BARREL_LENGTH * cosA);
-  const barrelExtY = Math.max(obb, BARREL_LENGTH * sinA);
+  const barrelExtX = Math.max(obb, barrelTipDist * cosA);
+  const barrelExtY = Math.max(obb, barrelTipDist * sinA);
 
   let x = tank.x;
   let y = tank.y;

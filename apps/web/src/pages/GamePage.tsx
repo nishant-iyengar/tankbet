@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Client } from '@colyseus/sdk';
 import { useApi } from '../hooks/useApi';
 import { GameEngine } from '../game/GameEngine';
@@ -8,6 +8,9 @@ import { CELL_SIZE, MAZE_COLS, MAZE_ROWS } from '@tankbet/game-engine/constants'
 import { useMobile } from '../hooks/useMobile';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { reconnectStorageKey, storeReconnectToken, clearReconnectToken } from '../utils/reconnectStorage';
+import { DevAuthContext } from '../auth/DevAuthContext';
+import { apiFetch } from '../api/client';
+import { BotPlayer } from '../game/BotPlayer';
 
 interface GameData {
   id: string;
@@ -19,14 +22,32 @@ interface GameData {
   opponent: { id: string; username: string } | null;
 }
 
+interface GameFetchResponse {
+  game: {
+    id: string;
+    status: string;
+    colyseusRoomId: string | null;
+    winnerId: string | null;
+    loserId: string | null;
+    creator: { id: string; username: string };
+    opponent: { id: string; username: string } | null;
+  };
+  playerIndex: 0 | 1;
+  seatReservation: SeatReservation | null;
+}
+
 function GameResultsOverlay({
   winnerId,
   myUserId,
   opponentUsername,
+  isBotGame,
+  onRetry,
 }: {
   winnerId: string;
   myUserId: string;
   opponentUsername: string;
+  isBotGame: boolean;
+  onRetry: () => void;
 }): React.JSX.Element {
   const navigate = useNavigate();
   const didWin = winnerId === myUserId;
@@ -41,12 +62,29 @@ function GameResultsOverlay({
           {didWin ? `${opponentUsername} fought hard` : `${opponentUsername} took the win`}
         </p>
 
-        <button
-          onClick={() => navigate('/')}
-          className="w-full bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg hover:bg-cyan-300 transition-colors text-sm"
-        >
-          Back to Home
-        </button>
+        {isBotGame ? (
+          <div className="flex gap-3">
+            <button
+              onClick={() => navigate('/')}
+              className="flex-1 border border-slate-600 text-slate-300 py-2.5 rounded-lg text-sm font-medium hover:border-slate-400 hover:text-white transition-colors"
+            >
+              Back to Home
+            </button>
+            <button
+              onClick={onRetry}
+              className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg hover:bg-cyan-300 transition-colors text-sm"
+            >
+              New Bot Game
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => navigate('/')}
+            className="w-full bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg hover:bg-cyan-300 transition-colors text-sm"
+          >
+            Back to Home
+          </button>
+        )}
       </div>
     </div>
   );
@@ -55,6 +93,9 @@ function GameResultsOverlay({
 export function GamePage(): React.JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isBotGame = searchParams.get('bot') === 'true';
+  const devAuth = useContext(DevAuthContext);
   const { get } = useApi();
   const getRef = useRef(get);
   getRef.current = get;
@@ -80,6 +121,41 @@ export function GamePage(): React.JSX.Element {
       engineRef.current.forfeit();
       engineRef.current = null;
     }
+  }
+
+  async function handleBotRetry(): Promise<void> {
+    const currentUser = devAuth?.devUser;
+    if (!currentUser) return;
+
+    const devAdminIds = ['dev-admin-1', 'dev-admin-2'];
+    const opponentClerkId = devAdminIds.find((cid) => cid !== currentUser.clerkId);
+    if (!opponentClerkId) return;
+
+    const wsUrl: string = import.meta.env['VITE_WS_URL'] ?? 'ws://localhost:3001';
+    const myToken = `DevToken ${currentUser.clerkId}`;
+    const opponentToken = `DevToken ${opponentClerkId}`;
+
+    // Create a new test game
+    const createResult = await apiFetch<{ gameId: string }>('/api/dev/test-game', {
+      method: 'POST',
+      body: { opponentClerkId },
+      token: myToken,
+    });
+
+    const newGameId = createResult.gameId;
+
+    // Get seat reservation for the opponent
+    const opponentData = await apiFetch<GameFetchResponse>(`/api/games/${newGameId}`, {
+      token: opponentToken,
+    });
+
+    if (!opponentData.seatReservation) return;
+
+    const botClient = new Client(wsUrl);
+    const bot = new BotPlayer();
+    await bot.connect(botClient, opponentData.seatReservation);
+
+    navigate(`/game/${newGameId}?bot=true`);
   }
 
   useEffect(() => {
@@ -283,6 +359,8 @@ export function GamePage(): React.JSX.Element {
           winnerId={winnerId}
           myUserId={myUserId}
           opponentUsername={opponentUsername}
+          isBotGame={isBotGame}
+          onRetry={handleBotRetry}
         />
       )}
       {showLeaveModal && (

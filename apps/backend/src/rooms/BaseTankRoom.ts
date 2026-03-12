@@ -1,3 +1,4 @@
+import { logger } from '../logger';
 import { Room } from '@colyseus/core';
 import type { Client } from '@colyseus/core';
 import { TankRoomState, Tank } from './TankRoomState';
@@ -21,6 +22,7 @@ import {
   extractWallEndpoints,
   collideTankWithEndpoints,
   advanceBullet,
+  bulletCrossesWall,
 } from '@tankbet/game-engine/physics';
 import type { InputState, WallSegment, Vec2, TankState, BulletState } from '@tankbet/game-engine/physics';
 import { generateMaze, mazeToSegments, getSpawnPositions } from '@tankbet/game-engine/maze';
@@ -273,21 +275,19 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         const movedTankState: TankState = { id: tank.id, x: shielded.x, y: shielded.y, angle: shielded.angle, speed: updated.speed };
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, movedTankState, this.wallSegments);
 
-        if (bulletState) {
-          this.lastFiredAt.set(sessionId, now);
-          this.bullets.push(bulletState);
-          // Echo fireTick so client can match this bullet to its saved barrel tip
-          const fireTick = this.lastClientTick.get(sessionId) ?? 0;
-          this.broadcast('bullet:fire', {
-            id: bulletState.id,
-            ownerId: bulletState.ownerId,
-            x: bulletState.x,
-            y: bulletState.y,
-            vx: bulletState.vx,
-            vy: bulletState.vy,
-            fireTick,
-          });
-        }
+        this.lastFiredAt.set(sessionId, now);
+        this.bullets.push(bulletState);
+        // Echo fireTick so client can match this bullet to its saved barrel tip
+        const fireTick = this.lastClientTick.get(sessionId) ?? 0;
+        this.broadcast('bullet:fire', {
+          id: bulletState.id,
+          ownerId: bulletState.ownerId,
+          x: bulletState.x,
+          y: bulletState.y,
+          vx: bulletState.vx,
+          vy: bulletState.vy,
+          fireTick,
+        });
       }
     });
 
@@ -295,6 +295,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     const bulletsToRemove: string[] = [];
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const bullet = this.bullets[i];
+      const prevX = bullet.x;
+      const prevY = bullet.y;
       const prevVx = bullet.vx;
       const prevVy = bullet.vy;
 
@@ -308,6 +310,10 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       const bounced = (Math.sign(advanced.vx) !== Math.sign(prevVx) && prevVx !== 0) ||
                       (Math.sign(advanced.vy) !== Math.sign(prevVy) && prevVy !== 0);
 
+      // Find the bounce hit point for split sweep test (V-shaped path)
+      let bounceHitX = 0;
+      let bounceHitY = 0;
+      let foundBouncePoint = false;
       if (bounced) {
         this.broadcast('bullet:bounce', {
           id: advanced.id,
@@ -316,6 +322,18 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
           vx: advanced.vx,
           vy: advanced.vy,
         });
+
+        // Re-detect which wall was hit to find the bounce point
+        const unbounced = { x: prevX + prevVx * dt, y: prevY + prevVy * dt };
+        for (const wall of this.wallSegments) {
+          const { crossed, hitX, hitY } = bulletCrossesWall(prevX, prevY, unbounced.x, unbounced.y, wall);
+          if (crossed) {
+            bounceHitX = hitX;
+            bounceHitY = hitY;
+            foundBouncePoint = true;
+            break;
+          }
+        }
       }
 
       let hitTank = false;
@@ -342,14 +360,56 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         }
 
         const ts: TankState = { id: tank.id, x: targetX, y: targetY, angle: targetAngle, speed: 0 };
-        const dx = advanced.x - targetX;
-        const dy = advanced.y - targetY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const collisionResult = checkBulletTankCollision(advanced, ts, this.wallSegments);
-        if (collisionResult) {
+
+        // For bounce ticks, split sweep into pre-bounce and post-bounce segments
+        // to avoid false-positives through the bounce wall while still catching
+        // hits along both legs of the V-shaped path.
+        let sweepPrevX: number | undefined;
+        let sweepPrevY: number | undefined;
+        if (bounced && foundBouncePoint) {
+          // Post-bounce segment: bounceHitPoint → advanced position
+          sweepPrevX = bounceHitX;
+          sweepPrevY = bounceHitY;
+        } else if (!bounced) {
+          // Normal straight-line sweep
+          sweepPrevX = prevX;
+          sweepPrevY = prevY;
+        }
+        // If bounced but no bounce point found, sweep is omitted (point test only)
+
+        // Primary check: point test at current position + sweep along current segment
+        let bulletHit = checkBulletTankCollision(advanced, ts, this.wallSegments, sweepPrevX, sweepPrevY);
+
+        // For bounce ticks, also check the pre-bounce segment (prevX,prevY → bounceHitPoint).
+        // This catches hits where the bullet passed through the tank before bouncing.
+        if (!bulletHit && bounced && foundBouncePoint) {
+          const preBounce: BulletState = { ...advanced, x: bounceHitX, y: bounceHitY };
+          bulletHit = checkBulletTankCollision(preBounce, ts, this.wallSegments, prevX, prevY);
+        }
+
+        if (bulletHit) {
           hitTank = true;
           bulletsToRemove.push(advanced.id);
           this.onBulletHitTank(sessionId);
+        } else {
+          const dx = advanced.x - targetX;
+          const dy = advanced.y - targetY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 30) {
+            logger.warn({
+              bulletId: advanced.id,
+              bulletX: advanced.x,
+              bulletY: advanced.y,
+              tankSessionId: sessionId,
+              targetX,
+              targetY,
+              targetAngle,
+              distance: Math.round(dist * 100) / 100,
+              rewindMs,
+              isBounceTick: sweepPrevX === undefined,
+              shooterRtt,
+            }, 'near-miss: bullet close to tank but no collision registered');
+          }
         }
       });
 

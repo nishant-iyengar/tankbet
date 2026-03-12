@@ -2,7 +2,8 @@ import {
   TANK_WIDTH,
   TANK_HEIGHT,
   BARREL_LENGTH,
-  BULLET_RADIUS,
+  BULLET_LENGTH,
+  BULLET_WIDTH,
   BARREL_WIDTH,
   WALL_LINE_WIDTH,
   COUNTDOWN_OVERLAY_ALPHA,
@@ -18,7 +19,7 @@ import type { LineSegment } from './maze';
 
 const BACKGROUND_COLOR = '#1a1a2e';
 const WALL_COLOR = '#ffffff';
-const BULLET_COLOR = '#ffd700';
+const BULLET_OUTLINE_DARKEN = 0.35;
 const HUD_FONT = '14px monospace';
 const COUNTDOWN_FONT = 'bold 96px monospace';
 
@@ -96,24 +97,43 @@ function darkenColor(hex: string, factor: number): string {
   return `rgb(${(r * f) | 0},${(g * f) | 0},${(b * f) | 0})`;
 }
 
-export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState): void {
+export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState, color: string): void {
   // Fade out in the last BULLET_FADE_SECONDS of lifetime
   const fadeStart = BULLET_LIFETIME_SECONDS - BULLET_FADE_SECONDS;
   const needsFade = bullet.age > fadeStart;
 
+  ctx.save();
+
   if (needsFade) {
-    ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - (bullet.age - fadeStart) / BULLET_FADE_SECONDS);
   }
 
-  ctx.fillStyle = BULLET_COLOR;
+  // Orient bullet in direction of travel
+  const angle = Math.atan2(bullet.vy, bullet.vx);
+  ctx.translate(bullet.x | 0, bullet.y | 0);
+  ctx.rotate(angle);
+
+  const halfLen = BULLET_LENGTH / 2;
+  const halfW = BULLET_WIDTH / 2;
+  const tipLen = 3; // length of the pointed tip
+
+  // Bullet shape: flat rear, rectangular body, pointed tip
+  ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(bullet.x | 0, bullet.y | 0, BULLET_RADIUS, 0, Math.PI * 2);
+  ctx.moveTo(-halfLen, -halfW);              // rear top
+  ctx.lineTo(halfLen - tipLen, -halfW);      // body top → tip base
+  ctx.lineTo(halfLen, 0);                    // tip point
+  ctx.lineTo(halfLen - tipLen, halfW);       // tip base → body bottom
+  ctx.lineTo(-halfLen, halfW);               // rear bottom
+  ctx.closePath();
   ctx.fill();
 
-  if (needsFade) {
-    ctx.restore();
-  }
+  // Subtle darker outline
+  ctx.strokeStyle = darkenColor(color, BULLET_OUTLINE_DARKEN);
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 export interface TrackMark {
@@ -188,54 +208,118 @@ export function drawCountdown(
   ctx.fillText(text, canvasWidth / 2, canvasHeight / 2);
 }
 
-export const EXPLOSION_DURATION_MS = 650;
-const EXPLOSION_PARTICLE_COUNT = 12;
-const EXPLOSION_MAX_RADIUS = 28;
+export const EXPLOSION_DURATION_MS = 750;
+const EXPLOSION_MAX_RADIUS = 32;
+
+function seededRandom(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 16807 + 0) % 2147483647;
+    return s / 2147483647;
+  };
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
 
 export function drawExplosion(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   elapsedMs: number,
+  tankColor: string,
 ): void {
-  const t = Math.min(elapsedMs / EXPLOSION_DURATION_MS, 1); // 0 → 1
-  const alpha = 1 - t;
+  const t = Math.min(elapsedMs / EXPLOSION_DURATION_MS, 1);
+  const { r, g, b } = hexToRgb(tankColor);
+  const rand = seededRandom(Math.round(x * 1000 + y));
 
   ctx.save();
 
-  // Central white flash (first 30% of duration only)
-  if (t < 0.3) {
-    const flashT = t / 0.3;
-    ctx.globalAlpha = (1 - flashT) * 0.9;
-    ctx.fillStyle = '#ffffff';
+  // Core flash — white center fading into tank color
+  if (t < 0.25) {
+    const flashT = t / 0.25;
+    const flashRadius = 18 * flashT;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, flashRadius);
+    gradient.addColorStop(0, `rgba(255, 255, 255, ${(1 - flashT) * 0.95})`);
+    gradient.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${(1 - flashT) * 0.7})`);
+    gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(x, y, 14 * flashT, 0, Math.PI * 2);
+    ctx.arc(x, y, flashRadius, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Expanding shockwave ring
-  ctx.globalAlpha = alpha * 0.7;
-  ctx.strokeStyle = '#fb923c';
-  ctx.lineWidth = 2;
+  // Expanding fireball glow
+  if (t < 0.7) {
+    const glowT = Math.min(t / 0.7, 1);
+    const glowRadius = EXPLOSION_MAX_RADIUS * 0.8 * glowT;
+    const glowAlpha = (1 - glowT) * 0.5;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
+    gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${glowAlpha})`);
+    gradient.addColorStop(0.6, `rgba(${r}, ${g}, ${b}, ${glowAlpha * 0.3})`);
+    gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, glowRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Shockwave ring in tank color
+  const ringAlpha = t < 0.15 ? t / 0.15 : Math.max(0, 1 - (t - 0.15) / 0.85);
+  ctx.globalAlpha = ringAlpha * 0.6;
+  ctx.strokeStyle = tankColor;
+  ctx.lineWidth = 2.5 * (1 - t * 0.6);
   ctx.beginPath();
   ctx.arc(x, y, EXPLOSION_MAX_RADIUS * t, 0, Math.PI * 2);
   ctx.stroke();
+  ctx.globalAlpha = 1;
 
-  // Radiating particles — vary speed so they spread at different rates
-  for (let i = 0; i < EXPLOSION_PARTICLE_COUNT; i++) {
-    const angle = (i / EXPLOSION_PARTICLE_COUNT) * Math.PI * 2;
-    const speedFactor = 0.5 + (i % 3) * 0.25; // 0.5 / 0.75 / 1.0
-    const dist = EXPLOSION_MAX_RADIUS * speedFactor * t;
+  // Debris chunks — larger pieces that fly outward with ease-out
+  const chunkCount = 8;
+  for (let i = 0; i < chunkCount; i++) {
+    const baseAngle = (i / chunkCount) * Math.PI * 2;
+    const angle = baseAngle + (rand() - 0.5) * 0.5;
+    const speedFactor = 0.6 + rand() * 0.4;
+    const easeOut = 1 - (1 - t) * (1 - t);
+    const dist = EXPLOSION_MAX_RADIUS * speedFactor * easeOut;
     const px = x + Math.cos(angle) * dist;
     const py = y + Math.sin(angle) * dist;
-    const radius = 2.5 * (1 - t * 0.6);
 
-    // Color: white → yellow → orange as t increases
-    const color = t < 0.25 ? '#ffffff' : t < 0.55 ? '#fbbf24' : '#f97316';
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = color;
+    const chunkSize = (3.5 + rand() * 2) * (1 - t * 0.8);
+    const chunkAlpha = Math.max(0, 1 - t * 1.3);
+
+    // White core blending to tank color over time
+    const whiteBlend = Math.max(0, 1 - t * 4);
+    const cr = Math.round(r + (255 - r) * whiteBlend);
+    const cg = Math.round(g + (255 - g) * whiteBlend);
+    const cb = Math.round(b + (255 - b) * whiteBlend);
+
+    ctx.globalAlpha = chunkAlpha;
+    ctx.fillStyle = `rgb(${cr}, ${cg}, ${cb})`;
     ctx.beginPath();
-    ctx.arc(px, py, radius, 0, Math.PI * 2);
+    ctx.arc(px, py, chunkSize, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Fine trailing particles — small, fast, tank-colored
+  const particleCount = 12;
+  for (let i = 0; i < particleCount; i++) {
+    const angle = (i / particleCount) * Math.PI * 2 + (rand() - 0.5) * 0.8;
+    const speedFactor = 0.8 + rand() * 0.2;
+    const easeOut = 1 - (1 - t) * (1 - t);
+    const dist = EXPLOSION_MAX_RADIUS * 1.2 * speedFactor * easeOut;
+    const px = x + Math.cos(angle) * dist;
+    const py = y + Math.sin(angle) * dist;
+
+    const particleSize = (1.5 + rand()) * (1 - t);
+    const particleAlpha = Math.max(0, 1 - t * 1.5);
+
+    ctx.globalAlpha = particleAlpha * 0.7;
+    ctx.fillStyle = tankColor;
+    ctx.beginPath();
+    ctx.arc(px, py, particleSize, 0, Math.PI * 2);
     ctx.fill();
   }
 
