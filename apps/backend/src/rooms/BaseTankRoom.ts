@@ -60,6 +60,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   protected sessionToPlayerIdx = new Map<string, 0 | 1>();
   protected spawnPositions: [Vec2, Vec2] = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
   protected lastFiredAt = new Map<string, number>();
+  protected closeSpawns = false;
   // Event-driven bullets — full physics state stored server-side, events broadcast to clients
   protected bullets: BulletState[] = [];
 
@@ -70,6 +71,16 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   // Reverse lookup: userId → sessionId (for finding shooter's session from bullet.ownerId)
   protected userIdToSession = new Map<string, string>();
 
+  /** Pick two spawn positions 1 cell apart (for test/bot games). */
+  private getCloseSpawnPositions(): [Vec2, Vec2] {
+    const col = Math.floor(Math.random() * (MAZE_COLS - 1));
+    const row = Math.floor(Math.random() * MAZE_ROWS);
+    return [
+      { x: col * CELL_SIZE + CELL_SIZE / 2, y: row * CELL_SIZE + CELL_SIZE / 2 },
+      { x: (col + 1) * CELL_SIZE + CELL_SIZE / 2, y: row * CELL_SIZE + CELL_SIZE / 2 },
+    ];
+  }
+
   protected initRoom(): void {
     this.state = new TankRoomState();
 
@@ -78,7 +89,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
     this.mazeWidth = MAZE_COLS * CELL_SIZE;
     this.mazeHeight = MAZE_ROWS * CELL_SIZE;
-    this.spawnPositions = getSpawnPositions(this.maze);
+    this.spawnPositions = this.closeSpawns ? this.getCloseSpawnPositions() : getSpawnPositions(this.maze);
 
     // Decouple patch rate from physics tick rate. Physics runs at 60Hz for
     // accuracy, but network patches are sent at ~30Hz (every ~33ms). Colyseus
@@ -151,7 +162,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.broadcast('bullet:clear');
 
     // Pick new random spawn positions for the fresh maze
-    this.spawnPositions = getSpawnPositions(this.maze);
+    this.spawnPositions = this.closeSpawns ? this.getCloseSpawnPositions() : getSpawnPositions(this.maze);
 
     // Broadcast new maze to all connected clients
     this.broadcast('maze', { segments: this.wallSegments });

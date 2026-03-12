@@ -102,6 +102,7 @@ export async function devRoutes(fastify: FastifyInstance): Promise<void> {
       player1Id: creator.id,
       player2Id: opponent.id,
       lives: LIVES_PER_TEST_GAME,
+      closeSpawns: true,
     });
 
     await prisma.$transaction([

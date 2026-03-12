@@ -30,7 +30,7 @@ export const GRACE_PERIOD_SECONDS = 30;
 export const GAME_START_COUNTDOWN_SECONDS = 3;
 export const INVITE_EXPIRY_SECONDS = 120;         // 2 minutes
 export const RESPAWN_DELAY_MS = 1500;     // ms — delay before respawn after death (practice mode)
-export const TIE_WINDOW_MS = 2000;        // ms — if second tank dies within this window it's a tie
+export const TIE_WINDOW_MS = 4000;        // ms — if second tank dies within this window it's a tie
 export const BATTLE_TRANSITION_DELAY_MS = 1500; // ms — pause in 'resolving' phase before new map
 // Server
 export const LIVES_PER_GAME = 5;

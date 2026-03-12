@@ -37,11 +37,12 @@ export class TankRoom extends BaseTankRoom {
     return '';
   }
 
-  onCreate(options: { gameId: string; player1Id: string; player2Id: string; lives?: number }): void {
+  onCreate(options: { gameId: string; player1Id: string; player2Id: string; lives?: number; closeSpawns?: boolean }): void {
     this.autoDispose = false;
     this.gameDbId = options.gameId;
     this.allowedUserIds = [options.player1Id, options.player2Id];
     if (options.lives !== undefined) this.livesPerGame = options.lives;
+    if (options.closeSpawns) this.closeSpawns = true;
     this.setPrivate(true);
     this.initRoom();
 
