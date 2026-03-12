@@ -184,6 +184,10 @@ export class GameEngine {
   private currentLives = new Map<string, number>();
   private tankAliveState = new Map<string, boolean>();
 
+  // Client-side death prediction — show death instantly without waiting for server patch
+  private predictedDead = false;
+  private predictedDeadTime = 0;
+
   // Tank track marks (tread trails)
   private trackMarks: TrackMark[] = [];
   private lastTrackPos = new Map<string, { x: number; y: number }>();
@@ -378,11 +382,15 @@ export class GameEngine {
           // Detect alive state transitions
           const wasAlive = this.tankAliveState.get(sessionId);
           if (wasAlive === true && !tank.alive) {
-            const localColor = [TANK_COLOR_P1, TANK_COLOR_P2][this.playerIndex];
-            this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now(), color: localColor });
-            // Reset input state so stale held-key inputs don't accumulate
-            this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
-            this.inputHandler.resetKeys();
+            if (!this.predictedDead) {
+              // Server-only death (prediction missed) — show explosion now
+              const localColor = [TANK_COLOR_P1, TANK_COLOR_P2][this.playerIndex];
+              this.explosions.push({ x: tank.x, y: tank.y, startTime: Date.now(), color: localColor });
+              this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
+              this.inputHandler.resetKeys();
+            }
+            // If predictedDead was true, explosion was already shown — just confirm
+            this.predictedDead = false;
           }
           const isRespawn = wasAlive === false && tank.alive;
           this.tankAliveState.set(sessionId, tank.alive);
@@ -390,6 +398,7 @@ export class GameEngine {
           if (isRespawn || this.snapNextLocalUpdate) {
             // Snap to new position — either respawn or new battle (maze changed)
             this.snapNextLocalUpdate = false;
+            this.predictedDead = false;
             this.localPhysics = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
             this.localPrevPhysics = { x: tank.x, y: tank.y, angle: tank.angle };
             this.localTankError = { dx: 0, dy: 0, dAngle: 0 };
@@ -479,9 +488,13 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     $.listen('phase', (value) => {
       this.currentPhase = value;
-      // Clear bullets when leaving playing phase so they don't linger on screen
       if (value !== 'playing') {
+        // Clear bullets so they don't linger on screen
         this.activeBullets.clear();
+        // Reset input state so stale held-key inputs don't carry into the next round
+        this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
+        this.inputHandler.resetKeys();
+        this.predictedDead = false;
       }
       this.notifyPhaseChange();
     });
@@ -595,7 +608,14 @@ export class GameEngine {
 
     // --- Local tank prediction ---
     const localAlive = this.tankAliveState.get(this.localSessionId);
-    if (localAlive) {
+
+    // Safety rollback: if client predicted death but server hasn't confirmed within 500ms,
+    // the prediction was wrong (e.g. bullet error offset caused a false positive). Reset.
+    if (this.predictedDead && localAlive && Date.now() - this.predictedDeadTime > 500) {
+      this.predictedDead = false;
+    }
+
+    if (localAlive && !this.predictedDead) {
       // Save prev for alpha interpolation
       this.localPrevPhysics.x = this.localPhysics.x;
       this.localPrevPhysics.y = this.localPhysics.y;
@@ -657,6 +677,47 @@ export class GameEngine {
 
     for (const id of bulletsToRemove) {
       this.activeBullets.delete(id);
+    }
+
+    // --- Client-side death prediction ---
+    // Check enemy bullets against local tank using the same shared collision
+    // function the server uses. This gives instant death feedback instead of
+    // waiting for the server schema patch (~33ms + network latency).
+    if (localAlive && !this.predictedDead) {
+      const localTankState: TankState = {
+        id: this.localPhysics.id,
+        x: this.localPhysics.x,
+        y: this.localPhysics.y,
+        angle: this.localPhysics.angle,
+        speed: this.localPhysics.speed,
+      };
+
+      for (const [bulletId, cb] of this.activeBullets) {
+        if (cb.state.ownerId === this.localPhysics.id) continue;
+
+        // Use physics prev position (without error offset) for sweep test
+        const prevPhysX = cb.prevX - cb.error.dx;
+        const prevPhysY = cb.prevY - cb.error.dy;
+
+        const hit = checkBulletTankCollision(
+          cb.state,
+          localTankState,
+          this.wallSegmentsTyped,
+          prevPhysX,
+          prevPhysY,
+        );
+
+        if (hit) {
+          this.predictedDead = true;
+          this.predictedDeadTime = Date.now();
+          const localColor = [TANK_COLOR_P1, TANK_COLOR_P2][this.playerIndex];
+          this.explosions.push({ x: this.localPhysics.x, y: this.localPhysics.y, startTime: Date.now(), color: localColor });
+          this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
+          this.inputHandler.resetKeys();
+          this.activeBullets.delete(bulletId);
+          break;
+        }
+      }
     }
   }
 
@@ -761,7 +822,7 @@ export class GameEngine {
     // --- Emit track marks ---
     // Local tank
     const localAlive = this.tankAliveState.get(this.localSessionId);
-    if (localAlive && this.localPhysics.speed !== 0) {
+    if (localAlive && !this.predictedDead && this.localPhysics.speed !== 0) {
       const localRenderX = this.localPrevPhysics.x + this.localPrevError.dx +
         (this.localPhysics.x + this.localTankError.dx - this.localPrevPhysics.x - this.localPrevError.dx) * alpha;
       const localRenderY = this.localPrevPhysics.y + this.localPrevError.dy +
@@ -779,7 +840,8 @@ export class GameEngine {
     drawTracks(this.ctx, this.trackMarks, now, TRACK_LIFETIME_MS);
 
     // --- Draw local tank (alpha interpolated) ---
-    if (localAlive) {
+    // Skip drawing when death is predicted — explosion already shown
+    if (localAlive && !this.predictedDead) {
       const prevVisX = this.localPrevPhysics.x + this.localPrevError.dx;
       const prevVisY = this.localPrevPhysics.y + this.localPrevError.dy;
       const prevVisAngle = this.localPrevPhysics.angle + this.localPrevError.dAngle;

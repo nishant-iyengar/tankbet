@@ -37,6 +37,12 @@ export class BotPlayer {
       this.room?.send('ping', { clientTime: performance.now() });
     }, 2000);
 
+    // Register no-op handlers for messages the bot doesn't process,
+    // suppressing Colyseus SDK "onMessage() not registered" warnings.
+    for (const type of ['bullet:fire', 'bullet:sync', 'bullet:bounce', 'bullet:remove', 'bullet:clear', 'maze']) {
+      this.room.onMessage(type, () => {});
+    }
+
     this.room.onLeave(() => {
       this.onStatusChange?.('disconnected');
       this.stopLoops();

@@ -155,6 +155,16 @@ export function GamePage(): React.JSX.Element {
     const bot = new BotPlayer();
     await bot.connect(botClient, opponentData.seatReservation);
 
+    // Tear down the old game engine so the effect can run cleanly with the new id
+    if (engineRef.current) {
+      engineRef.current.destroy();
+      engineRef.current = null;
+    }
+    connectingRef.current = false;
+    setPhase('loading');
+    setError('');
+    setGameData(null);
+
     navigate(`/game/${newGameId}?bot=true`);
   }
 

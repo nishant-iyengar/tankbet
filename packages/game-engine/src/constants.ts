@@ -13,7 +13,7 @@ export const BULLET_LIFETIME_SECONDS = 8; // time-based; bounces are infinite
 export const BULLET_RADIUS = 3;            // collision reflect radius (used for wall bounce offset)
 export const BULLET_LENGTH = 10;           // visual length of bullet shape (px)
 export const BULLET_WIDTH = 4;             // visual width of bullet body (px)
-export const BULLET_HIT_RADIUS = 5;       // collision radius — slightly larger than visual to favor shooter
+export const BULLET_HIT_RADIUS = 8;       // collision radius — larger than visual to compensate for client prediction error
 export const TANK_HITBOX_SHRINK = 1;      // px shrunk per side for damage hitbox (~90% of visual)
 export const BARREL_WIDTH = 5;            // px — barrel rectangle height in renderer
 export const WALL_LINE_WIDTH = 2;         // px — wall stroke width in renderer
@@ -47,6 +47,7 @@ export const BULLET_FIRE_COOLDOWN_MS = 200;  // min ms between shots per tank
 // Lag compensation
 export const POSITION_HISTORY_SIZE = 128;       // ring buffer capacity (~2s at 60Hz)
 export const LAG_COMP_MAX_REWIND_MS = 600;      // max rewind cap to prevent abuse
+export const REWIND_DECAY_MS = 500;             // rewind decays linearly to 0 over this bullet flight time
 
 // Room lifecycle
 export const GAME_END_DISCONNECT_DELAY_MS = 5000;  // ms — delay before disposing room after game ends

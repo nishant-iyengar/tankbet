@@ -11,6 +11,7 @@ import {
   POSITION_HISTORY_SIZE,
   LAG_COMP_MAX_REWIND_MS,
   REMOTE_INTERP_DELAY_MS,
+  REWIND_DECAY_MS,
 } from '@tankbet/game-engine/constants';
 import {
   updateTank,
@@ -142,10 +143,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     this.wallSegments = mazeToSegments(this.maze);
     this.wallEndpoints = extractWallEndpoints(this.wallSegments);
 
-    // Clear all projectiles and lag comp history (tanks teleport to new positions)
+    // Clear all projectiles, inputs, and lag comp history (tanks teleport to new positions)
     this.bullets = [];
     this.lastFiredAt.clear();
     this.positionHistory.clear();
+    this.pendingInputs.clear();
     this.broadcast('bullet:clear');
 
     // Pick new random spawn positions for the fresh maze
@@ -174,7 +176,9 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     const history = this.positionHistory.get(sessionId);
     if (!history || history.length === 0) return null;
 
-    const targetTime = Date.now() - rewindMs;
+    // Use tick-based time for jitter-free interpolation (matches recording in tick())
+    const currentTimeMs = this.serverTick * (1000 / SERVER_TICK_HZ);
+    const targetTime = currentTimeMs - rewindMs;
 
     // If target time is before all history, use earliest entry
     if (targetTime <= history[0].time) {
@@ -194,10 +198,16 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         const b = history[i];
         const span = b.time - a.time;
         const t = span > 0 ? (targetTime - a.time) / span : 1;
+
+        // Shortest-arc angle interpolation to handle 350° → 10° wrapping
+        let angleDiff = b.angle - a.angle;
+        if (angleDiff > 180) angleDiff -= 360;
+        if (angleDiff < -180) angleDiff += 360;
+
         return {
           x: a.x + (b.x - a.x) * t,
           y: a.y + (b.y - a.y) * t,
-          angle: a.angle + (b.angle - a.angle) * t,
+          angle: a.angle + angleDiff * t,
         };
       }
     }
@@ -241,15 +251,16 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.angle = Math.fround(shielded.angle);
       tank.speed = Math.fround(updated.speed);
 
-      // Record position history for lag compensation
+      // Record position history for lag compensation (tick-based timestamps for jitter-free interpolation)
+      const tickTimeMs = this.serverTick * (1000 / SERVER_TICK_HZ);
       const history = this.positionHistory.get(sessionId);
       if (history) {
-        history.push({ tick: this.serverTick, time: Date.now(), x: tank.x, y: tank.y, angle: tank.angle });
+        history.push({ tick: this.serverTick, time: tickTimeMs, x: tank.x, y: tank.y, angle: tank.angle });
         if (history.length > POSITION_HISTORY_SIZE) {
           history.splice(0, history.length - POSITION_HISTORY_SIZE);
         }
       } else {
-        this.positionHistory.set(sessionId, [{ tick: this.serverTick, time: Date.now(), x: tank.x, y: tank.y, angle: tank.angle }]);
+        this.positionHistory.set(sessionId, [{ tick: this.serverTick, time: tickTimeMs, x: tank.x, y: tank.y, angle: tank.angle }]);
       }
 
       // Estimate which client tick we've caught up to:
@@ -340,7 +351,13 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       // Determine shooter's session for lag compensation
       const shooterSessionId = this.userIdToSession.get(advanced.ownerId) ?? '';
       const shooterRtt = this.clientRtt.get(shooterSessionId) ?? 0;
-      const rewindMs = Math.min(REMOTE_INTERP_DELAY_MS + shooterRtt / 2, LAG_COMP_MAX_REWIND_MS);
+      // Rewind compensates for the shooter's latency at fire time. As the bullet
+      // ages on the server, it converges to server-authoritative, so the rewind
+      // decays linearly to 0 over REWIND_DECAY_MS of bullet flight.
+      const baseRewindMs = REMOTE_INTERP_DELAY_MS + shooterRtt / 2;
+      const bulletAgeMs = advanced.age * 1000;
+      const decayFactor = Math.max(0, 1 - bulletAgeMs / REWIND_DECAY_MS);
+      const rewindMs = Math.min(baseRewindMs * decayFactor, LAG_COMP_MAX_REWIND_MS);
 
       this.state.tanks.forEach((tank, sessionId) => {
         if (hitTank || !tank.alive) return;
