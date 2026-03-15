@@ -14,6 +14,7 @@ import {
   BULLET_FIRE_COOLDOWN_MS,
   MAX_BULLETS_PER_TANK,
   BARREL_WIDTH,
+  REVERSE_SPEED_FACTOR,
 } from './constants';
 
 export type Vec2 = { x: number; y: number };
@@ -86,7 +87,7 @@ export function updateTank(tank: TankState, input: InputState, dt: number): Tank
   if (input.up) {
     speed = TANK_SPEED;
   } else if (input.down) {
-    speed = -TANK_SPEED * 0.85;
+    speed = -TANK_SPEED * REVERSE_SPEED_FACTOR;
   }
 
   const rad = degreesToRadians(angle);
