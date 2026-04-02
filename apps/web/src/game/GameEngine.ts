@@ -35,8 +35,10 @@ import {
   drawHUD,
   drawExplosion,
   EXPLOSION_DURATION_MS,
+  drawDustParticles,
+  DUST_LIFETIME,
 } from '@tankbet/game-engine/renderer';
-import type { TrackMark } from '@tankbet/game-engine/renderer';
+import type { TrackMark, DustParticle } from '@tankbet/game-engine/renderer';
 import { TRACK_LIFETIME_MS, TRACK_SPACING } from '@tankbet/game-engine/constants';
 
 const BACKGROUND_COLOR = '#1a1a2e';
@@ -131,6 +133,7 @@ export class GameEngine {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private inputHandler: InputHandler;
+  private pauseKeyHandler: ((e: KeyboardEvent) => void) | null = null;
   private mazeSegments: LineSegment[] = [];
   private mazeCanvas: OffscreenCanvas | null = null;
   private animFrameId: number | null = null;
@@ -191,6 +194,10 @@ export class GameEngine {
   // Tank track marks (tread trails)
   private trackMarks: TrackMark[] = [];
   private lastTrackPos = new Map<string, { x: number; y: number }>();
+
+  // Wall dust particles
+  private dustParticles: DustParticle[] = [];
+  private lastDustPos = new Map<string, { x: number; y: number }>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -488,13 +495,18 @@ export class GameEngine {
     // -----------------------------------------------------------------------
     $.listen('phase', (value) => {
       this.currentPhase = value;
-      if (value !== 'playing') {
+      if (value !== 'playing' && value !== 'paused') {
         // Clear bullets so they don't linger on screen
         this.activeBullets.clear();
         // Reset input state so stale held-key inputs don't carry into the next round
         this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
         this.inputHandler.resetKeys();
         this.predictedDead = false;
+      }
+      if (value === 'paused') {
+        // Reset input so held keys don't fire immediately on unpause
+        this.currentInput = { up: false, down: false, left: false, right: false, fire: false };
+        this.inputHandler.resetKeys();
       }
       this.notifyPhaseChange();
     });
@@ -526,6 +538,16 @@ export class GameEngine {
         this.room?.send('input', { keys, tick: this.clientTick });
       }
     });
+
+    // Pause key (P) — only in practice mode
+    if (this.isPractice) {
+      this.pauseKeyHandler = (e: KeyboardEvent) => {
+        if (e.code === 'KeyP' && !e.repeat) {
+          this.room?.send('pause');
+        }
+      };
+      window.addEventListener('keydown', this.pauseKeyHandler);
+    }
 
     this.startGameLoop();
   }
@@ -626,13 +648,18 @@ export class GameEngine {
       const prevState: TankState = { ...this.localPhysics };
       const moved = updateTank(prevState, { ...this.currentInput, fire: false }, PHYSICS_STEP);
       const clamped = clampTankToMaze(moved, this.mazeWidth, this.mazeHeight);
-      const { tank: collided } = collideTankWithWalls(clamped, prevState, this.wallSegmentsTyped);
+      const { tank: collided, hitX: localHitX, hitY: localHitY } = collideTankWithWalls(clamped, prevState, this.wallSegmentsTyped);
       const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
       // Quantize to float32 to match server precision (schema uses float32)
       this.localPhysics.x = Math.fround(shielded.x);
       this.localPhysics.y = Math.fround(shielded.y);
       this.localPhysics.angle = Math.fround(shielded.angle);
       this.localPhysics.speed = Math.fround(moved.speed);
+
+      // Emit wall dust particles when scraping a wall
+      if ((localHitX || localHitY) && moved.speed !== 0) {
+        this.emitDustParticles(this.localSessionId, this.localPhysics.x, this.localPhysics.y, localHitX, localHitY, moved.speed, moved.angle);
+      }
 
       // Save prediction entry
       this.predictionBuffer.push({
@@ -782,6 +809,15 @@ export class GameEngine {
     this.lastFrameTime = performance.now();
     this.accumulator = 0;
     const loop = (timestamp: number): void => {
+      if (this.currentPhase === 'paused') {
+        // Freeze time so the accumulator doesn't grow during pause.
+        // Without this, unpausing would cause a burst of physics ticks.
+        this.lastFrameTime = timestamp;
+        this.render(0);
+        this.animFrameId = requestAnimationFrame(loop);
+        return;
+      }
+
       const frameTime = Math.min((timestamp - this.lastFrameTime) / 1000, 0.1); // cap to prevent spiral of death
       this.lastFrameTime = timestamp;
       this.accumulator += frameTime;
@@ -871,16 +907,21 @@ export class GameEngine {
       drawTank(this.ctx, ts, remoteColor);
     }
 
-    // --- Draw bullets (alpha interpolated) ---
+    // --- Draw bullets (alpha interpolated, frozen when paused) ---
+    const paused = this.currentPhase === 'paused';
     this.activeBullets.forEach((cb) => {
       const curVisX = cb.state.x + cb.error.dx;
       const curVisY = cb.state.y + cb.error.dy;
-      const bx = cb.prevX + (curVisX - cb.prevX) * alpha;
-      const by = cb.prevY + (curVisY - cb.prevY) * alpha;
+      const bx = paused ? curVisX : cb.prevX + (curVisX - cb.prevX) * alpha;
+      const by = paused ? curVisY : cb.prevY + (curVisY - cb.prevY) * alpha;
       const bulletColorIdx = cb.state.ownerId === this.localPhysics.id ? this.playerIndex : 1 - this.playerIndex;
       const bulletColor = [TANK_COLOR_P1, TANK_COLOR_P2][bulletColorIdx];
       drawBullet(this.ctx, { ...cb.state, x: bx, y: by }, bulletColor);
     });
+
+    // --- Dust particles (wall friction) — drawn on top of tanks/bullets ---
+    this.dustParticles = this.dustParticles.filter((p) => now - p.spawnTime < DUST_LIFETIME);
+    drawDustParticles(this.ctx, this.dustParticles, now);
 
     // --- Explosions ---
     this.explosions = this.explosions.filter((exp) => now - exp.startTime < EXPLOSION_DURATION_MS);
@@ -901,6 +942,22 @@ export class GameEngine {
 
     if (this.currentPhase === 'countdown') {
       drawCountdown(this.ctx, width, height, this.currentCountdown);
+    }
+
+    // Pause overlay — drawn on top of everything
+    if (this.currentPhase === 'paused') {
+      this.ctx.save();
+      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      this.ctx.fillRect(0, 0, width, height);
+      this.ctx.fillStyle = '#ffffff';
+      this.ctx.font = 'bold 48px Inter, sans-serif';
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'middle';
+      this.ctx.fillText('PAUSED', width / 2, height / 2 - 20);
+      this.ctx.fillStyle = '#94a3b8'; // slate-400
+      this.ctx.font = '16px Inter, sans-serif';
+      this.ctx.fillText('Press P to resume', width / 2, height / 2 + 24);
+      this.ctx.restore();
     }
   }
 
@@ -930,6 +987,70 @@ export class GameEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Dust particle emission helper
+  // -------------------------------------------------------------------------
+
+  private static readonly DUST_COLOR = '#6b7280'; // gray-500 — neutral for all tanks
+
+  private emitDustParticles(sessionId: string, x: number, y: number, hitX: boolean, hitY: boolean, speed: number, angle: number): void {
+    // Spacing check — don't oversaturate when tank is barely moving
+    const last = this.lastDustPos.get(sessionId);
+    if (last) {
+      const dx = x - last.x;
+      const dy = y - last.y;
+      if (dx * dx + dy * dy < 36) return; // ~6px spacing
+    }
+    this.lastDustPos.set(sessionId, { x, y });
+
+    // Compute the OBB half-extents projected onto world axes to find the
+    // tank edge closest to the wall on each blocked axis.
+    const rad = degreesToRadians(angle);
+    const cosA = Math.abs(Math.cos(rad));
+    const sinA = Math.abs(Math.sin(rad));
+    const hw = 10; // TANK_WIDTH / 2
+    const hh = 10; // TANK_HEIGHT / 2
+    // OBB extent on each world axis
+    const extentX = hw * cosA + hh * sinA;
+    const extentY = hw * sinA + hh * cosA;
+
+    // Movement direction in world space (accounts for reverse)
+    const moveDirX = Math.cos(rad) * Math.sign(speed);
+    const moveDirY = Math.sin(rad) * Math.sign(speed);
+
+    const now = Date.now();
+    const count = 2 + Math.floor(Math.random() * 3); // 2-4 particles
+    for (let i = 0; i < count; i++) {
+      let vx = 0;
+      let vy = 0;
+      let ox = 0;
+      let oy = 0;
+      if (hitX) {
+        // Place at the OBB edge on the X axis the tank was moving toward
+        ox = (moveDirX >= 0 ? extentX : -extentX) + (Math.random() - 0.5) * 4;
+        oy = (Math.random() - 0.5) * extentY * 1.5;
+        vx = (Math.random() - 0.5) * 40;
+        vy = (Math.random() - 0.5) * 120;
+      }
+      if (hitY) {
+        oy = (moveDirY >= 0 ? extentY : -extentY) + (Math.random() - 0.5) * 4;
+        ox += (Math.random() - 0.5) * extentX * 1.5;
+        vx += (Math.random() - 0.5) * 120;
+        vy += (Math.random() - 0.5) * 40;
+      }
+
+      this.dustParticles.push({
+        x: x + ox,
+        y: y + oy,
+        vx,
+        vy,
+        alpha: 0.7 + Math.random() * 0.3,
+        color: GameEngine.DUST_COLOR,
+        spawnTime: now,
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Maze setup
   // -------------------------------------------------------------------------
 
@@ -945,6 +1066,8 @@ export class GameEngine {
     this.wallEndpoints = extractWallEndpoints(this.wallSegmentsTyped);
     this.trackMarks = [];
     this.lastTrackPos.clear();
+    this.dustParticles = [];
+    this.lastDustPos.clear();
 
     // New maze means new battle — reset interpolation state so tanks snap
     // to their new spawn positions instead of lerping from the old maze.
@@ -978,8 +1101,14 @@ export class GameEngine {
     this.mazeCanvas = offscreen;
   }
 
-  forfeit(): void {
-    this.room?.send('forfeit');
+  async forfeit(): Promise<void> {
+    if (this.room) {
+      this.room.send('forfeit');
+      // Await leave() so the forfeit message is flushed over the WebSocket
+      // before the connection closes. Without this, the server sees a "drop"
+      // instead of a forfeit.
+      try { await this.room.leave(); } catch { /* room may already be closed */ }
+    }
     this.destroy();
   }
 
@@ -992,7 +1121,14 @@ export class GameEngine {
       this.pingIntervalId = null;
     }
     this.inputHandler.detach();
-    void this.room?.leave();
+    if (this.pauseKeyHandler) {
+      window.removeEventListener('keydown', this.pauseKeyHandler);
+      this.pauseKeyHandler = null;
+    }
+    // room.leave() is already handled by forfeit() — only call if room still exists
+    if (this.room) {
+      void this.room.leave();
+    }
     this.room = null;
     this.client = null;
   }

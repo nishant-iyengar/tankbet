@@ -2,6 +2,8 @@ import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAppClerk } from '../auth/useAppAuth';
 import { useEffect, useState, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
+import { apiFetch } from '../api/client';
+import type { PlatformStats } from '@tankbet/shared/types';
 
 interface UserData {
   username: string;
@@ -13,6 +15,11 @@ export function Layout(): React.JSX.Element {
   const { get, post } = useApi();
   const [userData, setUserData] = useState<UserData | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [platformStats, setPlatformStats] = useState<PlatformStats | null>(null);
+
+  useEffect(() => {
+    void apiFetch<PlatformStats>('/api/stats/platform').then(setPlatformStats);
+  }, []);
 
   const refreshUser = useCallback(() => {
     get<UserData>('/api/users/me').then(setUserData).catch(() => {});
@@ -27,7 +34,6 @@ export function Layout(): React.JSX.Element {
   const navItems = [
     { label: 'Home',     path: '/' },
     { label: 'Practice', path: '/practice' },
-    { label: 'History', path: '/history' },
   ];
 
   return (
@@ -60,7 +66,27 @@ export function Layout(): React.JSX.Element {
       {/* Main content */}
       <div className="flex-1 ml-52">
         {/* Top bar */}
-        <header className="h-14 border-b border-slate-700/50 flex items-center justify-end gap-3 px-6 bg-slate-900/60 backdrop-blur-sm sticky top-0 z-40">
+        <header className="h-14 border-b border-slate-700/50 flex items-center justify-between px-6 bg-slate-900/60 backdrop-blur-sm sticky top-0 z-40">
+          {/* Platform stats */}
+          {platformStats !== null ? (
+            <div className="flex items-center gap-5 text-sm">
+              <span className="flex items-center gap-2 text-slate-300 font-medium">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+                </span>
+                <span className="tabular-nums">{platformStats.totalPlayers.toLocaleString()}</span>
+                <span className="text-slate-500">Players</span>
+              </span>
+              <span className="text-slate-300 font-medium">
+                <span className="tabular-nums">{platformStats.totalGames.toLocaleString()}</span>
+                <span className="text-slate-500 ml-1">Games</span>
+              </span>
+            </div>
+          ) : (
+            <div />
+          )}
+
           <div className="relative">
             <button
               onClick={() => setShowDropdown(!showDropdown)}

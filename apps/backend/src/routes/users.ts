@@ -80,6 +80,53 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     });
   });
 
+  // GET /api/users/stats — Win/loss record, streak, total donated
+  fastify.get('/stats', { preHandler: requireAuth }, async (req, reply) => {
+    const user = req.dbUser;
+
+    const [wins, losses, recentGames] = await Promise.all([
+      prisma.game.count({
+        where: {
+          winnerId: user.id,
+          status: { in: ['COMPLETED', 'FORFEITED'] },
+        },
+      }),
+      prisma.game.count({
+        where: {
+          loserId: user.id,
+          status: { in: ['COMPLETED', 'FORFEITED'] },
+        },
+      }),
+      prisma.game.findMany({
+        where: {
+          OR: [{ creatorId: user.id }, { opponentId: user.id }],
+          status: { in: ['COMPLETED', 'FORFEITED'] },
+        },
+        select: { winnerId: true },
+        orderBy: { endedAt: 'desc' },
+        take: 50,
+      }),
+    ]);
+
+    // Calculate streak: positive = win streak, negative = loss streak
+    let streak = 0;
+    if (recentGames.length > 0) {
+      const firstIsWin = recentGames[0].winnerId === user.id;
+      for (const game of recentGames) {
+        const isWin = game.winnerId === user.id;
+        if (isWin !== firstIsWin) break;
+        streak += isWin ? 1 : -1;
+      }
+    }
+
+    return reply.send({
+      wins,
+      losses,
+      streak,
+      totalDonatedCents: user.totalDonatedCents,
+    });
+  });
+
   // GET /api/users/game-history — Paginated game history with filters
   interface GameHistoryQuery { cursor?: string; limit?: string; status?: string; result?: string }
   fastify.get<{ Querystring: GameHistoryQuery }>('/game-history', { preHandler: requireAuth }, async (req, reply) => {

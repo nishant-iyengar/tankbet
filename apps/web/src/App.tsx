@@ -9,7 +9,6 @@ import { PracticePage } from './pages/PracticePage';
 import { InvitePage } from './pages/InvitePage';
 import { GamePage } from './pages/GamePage';
 import { LoginPage } from './pages/LoginPage';
-import { HistoryPage } from './pages/HistoryPage';
 import { DevGamePage } from './pages/DevGamePage';
 import { useMobile } from './hooks/useMobile';
 import { sweepStaleReconnectTokens } from './utils/reconnectStorage';
@@ -45,7 +44,6 @@ export function App(): React.JSX.Element {
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/practice" element={<PracticePage />} />
-          <Route path="/history" element={<HistoryPage />} />
         </Route>
         <Route path="/game/:id" element={<GamePage />} />
       </Route>

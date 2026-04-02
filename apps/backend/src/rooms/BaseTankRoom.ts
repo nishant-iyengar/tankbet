@@ -142,6 +142,38 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     }
   }
 
+  /** Spawn a virtual bot player (no real WebSocket client). */
+  protected spawnBot(sessionId: string, userId: string): void {
+    const playerIdx: 0 | 1 = this.playerCount === 0 ? 0 : 1;
+    this.playerCount++;
+    this.sessionToUserId.set(sessionId, userId);
+    this.userIdToSession.set(userId, sessionId);
+    this.sessionToPlayerIdx.set(sessionId, playerIdx);
+
+    if (!this.maze) return;
+
+    const spawn = this.spawnPositions[playerIdx];
+    const tank = new Tank();
+    tank.id = userId;
+    tank.x = spawn.x;
+    tank.y = spawn.y;
+    tank.angle = playerIdx === 0 ? 0 : 180;
+    tank.alive = true;
+    tank.speed = 0;
+    this.state.tanks.set(sessionId, tank);
+    this.state.lives.set(sessionId, this.livesPerGame);
+
+    // Initialize position history immediately so lag compensation works from tick 1.
+    // Without this, the bot has no history and rewind returns null, causing bullet misses.
+    this.positionHistory.set(sessionId, [{
+      tick: 0,
+      time: 0,
+      x: tank.x,
+      y: tank.y,
+      angle: tank.angle,
+    }]);
+  }
+
   protected startGameLoop(): void {
     this.setSimulationInterval((dt) => this.tick(dt / 1000), 1000 / SERVER_TICK_HZ);
   }
@@ -182,6 +214,11 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
   }
 
   protected abstract onBulletHitTank(killedSessionId: string): void;
+
+  /** Hook called at the start of each physics tick, before input processing. */
+  protected onBeforeTick(): void {
+    // Subclasses (e.g., PracticeRoom) can override to inject bot inputs.
+  }
 
   private getRewindPosition(sessionId: string, rewindMs: number): { x: number; y: number; angle: number } | null {
     const history = this.positionHistory.get(sessionId);
@@ -231,6 +268,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
     const dt = 1 / SERVER_TICK_HZ;
     if (this.state.phase !== 'playing') return;
     this.serverTick++;
+    this.onBeforeTick();
 
     // 1. Process pending inputs → move tanks first, then fire.
     // Moving before firing ensures the bullet spawns from the barrel's
@@ -243,26 +281,30 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       }
 
       const pending = this.pendingInputs.get(sessionId);
-      if (!pending) return;
+      let input: InputState | null = null;
 
-      const input = pending.keys;
+      if (pending) {
+        input = pending.keys;
 
-      const prevTankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
+        const prevTankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: 0 };
 
-      // Move the tank first
-      const updated = updateTank(prevTankState, { ...input, fire: false }, dt);
-      const clamped = clampTankToMaze(updated, this.mazeWidth, this.mazeHeight);
-      const { tank: collided } = collideTankWithWalls(clamped, prevTankState, this.wallSegments);
-      const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
-      // Quantize to float32 so server-side values match what clients receive
-      // over the wire (schema uses float32). This prevents drift from float64
-      // accumulation on the server vs float32 snapshots on the client.
-      tank.x = Math.fround(shielded.x);
-      tank.y = Math.fround(shielded.y);
-      tank.angle = Math.fround(shielded.angle);
-      tank.speed = Math.fround(updated.speed);
+        // Move the tank first
+        const updated = updateTank(prevTankState, { ...input, fire: false }, dt);
+        const clamped = clampTankToMaze(updated, this.mazeWidth, this.mazeHeight);
+        const { tank: collided } = collideTankWithWalls(clamped, prevTankState, this.wallSegments);
+        const shielded = collideTankWithEndpoints(collided, this.wallEndpoints);
+        // Quantize to float32 so server-side values match what clients receive
+        // over the wire (schema uses float32). This prevents drift from float64
+        // accumulation on the server vs float32 snapshots on the client.
+        tank.x = Math.fround(shielded.x);
+        tank.y = Math.fround(shielded.y);
+        tank.angle = Math.fround(shielded.angle);
+        tank.speed = Math.fround(updated.speed);
+      }
 
-      // Record position history for lag compensation (tick-based timestamps for jitter-free interpolation)
+      // Always record position history for lag compensation, even without input.
+      // Bot tanks inject input via onBeforeTick() every 3 ticks; without this,
+      // the bot has no history on idle ticks and rewind returns null → bullet misses.
       const tickTimeMs = this.serverTick * (1000 / SERVER_TICK_HZ);
       const history = this.positionHistory.get(sessionId);
       if (history) {
@@ -274,6 +316,8 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
         this.positionHistory.set(sessionId, [{ tick: this.serverTick, time: tickTimeMs, x: tank.x, y: tank.y, angle: tank.angle }]);
       }
 
+      if (!input) return;
+
       // Estimate which client tick we've caught up to:
       // lastClientTick (from last input message) + server ticks processed since
       const baseTick = this.lastClientTick.get(sessionId) ?? 0;
@@ -281,7 +325,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
       tank.lastInputSeq = baseTick + elapsed;
       this.ticksSinceInput.set(sessionId, elapsed + 1);
 
-      // Fire from the updated position
+      // Fire from the updated position (tank.x/y already updated above)
       const now = Date.now();
       const lastFired = this.lastFiredAt.get(sessionId) ?? 0;
 
@@ -294,7 +338,7 @@ export abstract class BaseTankRoom extends Room<{ state: TankRoomState }> {
 
       if (input.fire && canFire) {
         this.bulletIdCounter++;
-        const movedTankState: TankState = { id: tank.id, x: shielded.x, y: shielded.y, angle: shielded.angle, speed: updated.speed };
+        const movedTankState: TankState = { id: tank.id, x: tank.x, y: tank.y, angle: tank.angle, speed: tank.speed };
         const bulletState = createBullet(`b-${this.bulletIdCounter}`, movedTankState, this.wallSegments);
 
         this.lastFiredAt.set(sessionId, now);

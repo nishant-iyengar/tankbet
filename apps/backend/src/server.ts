@@ -8,6 +8,7 @@ import { gameRoutes } from './routes/games';
 import { TankRoom } from './rooms/TankRoom';
 import { PracticeRoom } from './rooms/PracticeRoom';
 import { practiceRoutes } from './routes/practice';
+import { statsRoutes } from './routes/stats';
 import { startGameCleanupJobs } from './services/game.service';
 import { env, isDev } from './environment';
 import { logger } from './logger';
@@ -34,6 +35,7 @@ async function start(): Promise<void> {
   await fastify.register(userRoutes, { prefix: '/api/users' });
   await fastify.register(gameRoutes, { prefix: '/api/games' });
   await fastify.register(practiceRoutes, { prefix: '/api/practice' });
+  await fastify.register(statsRoutes, { prefix: '/api/stats' });
 
   if (isDev) {
     const { devRoutes } = await import('./routes/dev');

@@ -449,7 +449,8 @@ export function reflectBulletAtWall(
   return { ...bullet, x, y, vx, vy };
 }
 
-// Advance a bullet by one tick: move → lifetime check → single wall bounce.
+// Advance a bullet by one tick: move → lifetime check → wall bounces.
+// Handles up to 2 bounces per tick (corner double-bounces).
 // Returns null if the bullet has expired.
 export function advanceBullet(
   bullet: BulletState,
@@ -468,7 +469,6 @@ export function advanceBullet(
     if (crossed) {
       const reflected = reflectBulletAtWall(updated, wall, hitX, hitY);
       // Carry remaining travel distance through the reflection.
-      // t is the fraction of the path consumed reaching the wall.
       const dx = updated.x - prevX;
       const dy = updated.y - prevY;
       const totalDist = Math.sqrt(dx * dx + dy * dy);
@@ -480,8 +480,36 @@ export function advanceBullet(
         // Move in the reflected direction for the remaining distance
         const speed = Math.sqrt(reflected.vx * reflected.vx + reflected.vy * reflected.vy);
         if (speed > 0) {
+          const carryStartX = reflected.x;
+          const carryStartY = reflected.y;
           reflected.x += (reflected.vx / speed) * remainDist;
           reflected.y += (reflected.vy / speed) * remainDist;
+
+          // Corner double-bounce: the post-bounce carry may cross a second wall
+          // (e.g., two perpendicular walls meeting at a corner). Check and reflect again.
+          for (const wall2 of walls) {
+            if (wall2 === wall) continue;
+            const cross2 = bulletCrossesWall(carryStartX, carryStartY, reflected.x, reflected.y, wall2);
+            if (cross2.crossed) {
+              const reflected2 = reflectBulletAtWall(reflected, wall2, cross2.hitX, cross2.hitY);
+              // Carry remaining distance after second bounce
+              const dx2 = reflected.x - carryStartX;
+              const dy2 = reflected.y - carryStartY;
+              const totalDist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+              if (totalDist2 > 0.001) {
+                const hitDx2 = cross2.hitX - carryStartX;
+                const hitDy2 = cross2.hitY - carryStartY;
+                const hitDist2 = Math.sqrt(hitDx2 * hitDx2 + hitDy2 * hitDy2);
+                const remainDist2 = totalDist2 - hitDist2;
+                const speed2 = Math.sqrt(reflected2.vx * reflected2.vx + reflected2.vy * reflected2.vy);
+                if (speed2 > 0) {
+                  reflected2.x += (reflected2.vx / speed2) * remainDist2;
+                  reflected2.y += (reflected2.vy / speed2) * remainDist2;
+                }
+              }
+              return reflected2;
+            }
+          }
         }
       }
       return reflected;

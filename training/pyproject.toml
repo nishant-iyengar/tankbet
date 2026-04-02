@@ -1,0 +1,18 @@
+[project]
+name = "training"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gymnasium[box2d]>=1.2.3",
+    "imageio-ffmpeg>=0.6.0",
+    "moviepy>=2.2.1",
+    "numpy>=2.4.3",
+    "optuna>=4.8.0",
+    "pygame>=2.6.1",
+    "setuptools<81",
+    "swig>=4.4.1",
+    "tensorboard>=2.20.0",
+    "torch>=2.10.0",
+]

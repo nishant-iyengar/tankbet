@@ -117,10 +117,16 @@ export function GamePage(): React.JSX.Element {
     if (id) {
       clearReconnectToken(id);
     }
-    if (engineRef.current) {
-      engineRef.current.forfeit();
-      engineRef.current = null;
+    // Signal HomePage to skip the active-game redirect (race: forfeit may not
+    // have been processed server-side by the time /me returns). Use a timestamp
+    // so it survives StrictMode double-render (expires after 5 seconds).
+    sessionStorage.setItem('skipActiveGameRedirect', String(Date.now()));
+    const engine = engineRef.current;
+    engineRef.current = null;
+    if (engine) {
+      void engine.forfeit();
     }
+    navigate('/');
   }
 
   async function handleBotRetry(): Promise<void> {

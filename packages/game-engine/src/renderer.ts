@@ -326,6 +326,50 @@ export function drawExplosion(
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+// Dust particles (wall friction visual feedback)
+// ---------------------------------------------------------------------------
+
+export interface DustParticle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  alpha: number;
+  color: string;
+  spawnTime: number;
+}
+
+const DUST_LIFETIME_MS = 400;
+const DUST_RADIUS = 6;
+
+export function drawDustParticles(ctx: CanvasRenderingContext2D, particles: DustParticle[], now: number): void {
+  if (particles.length === 0) return;
+
+  ctx.save();
+  for (const p of particles) {
+    const age = now - p.spawnTime;
+    if (age >= DUST_LIFETIME_MS) continue;
+
+    const t = age / DUST_LIFETIME_MS;
+    // Position drifts by velocity over time
+    const px = p.x + p.vx * (age / 1000);
+    const py = p.y + p.vy * (age / 1000);
+    // Alpha decay — start bright, fade out
+    const alpha = p.alpha * (1 - t);
+    if (alpha <= 0.01) continue;
+
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(px | 0, py | 0, DUST_RADIUS * (1 - t * 0.4), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+export const DUST_LIFETIME = DUST_LIFETIME_MS;
+
 export function drawHUD(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,

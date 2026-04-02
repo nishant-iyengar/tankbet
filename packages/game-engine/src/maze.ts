@@ -29,7 +29,12 @@ function wallKey(from: Cell, to: Cell): string {
   return `${to.row},${to.col}-${from.row},${from.col}`;
 }
 
-export function generateMaze(cols: number, rows: number, seed?: number): Maze {
+export interface MazeOptions {
+  straightBias?: number;   // default 0.80
+  wallRemovalPct?: number; // default 0.20
+}
+
+export function generateMaze(cols: number, rows: number, seed?: number, options?: MazeOptions): Maze {
   const random = seed !== undefined ? mulberry32(seed) : Math.random;
 
   // Build full wall set between adjacent cells
@@ -71,7 +76,7 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
   // Track last direction to bias toward straight corridors
   let lastDr = 0;
   let lastDc = 0;
-  const STRAIGHT_BIAS = 0.80; // probability of continuing straight when possible
+  const STRAIGHT_BIAS = options?.straightBias ?? 0.80;
 
   while (stack.length > 0) {
     const current = stack[stack.length - 1];
@@ -126,7 +131,8 @@ export function generateMaze(cols: number, rows: number, seed?: number): Maze {
   // Remove ~20% of remaining internal walls to create loops and eliminate
   // most dead ends, giving the maze a more open, less twisty feel.
   const remainingKeys = Array.from(allWalls);
-  const removeCount = Math.floor(remainingKeys.length * 0.20);
+  const wallRemovalPct = options?.wallRemovalPct ?? 0.20;
+  const removeCount = Math.floor(remainingKeys.length * wallRemovalPct);
   // Fisher-Yates shuffle the keys then drop the first removeCount
   for (let i = remainingKeys.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));

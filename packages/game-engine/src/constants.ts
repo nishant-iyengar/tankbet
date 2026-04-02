@@ -27,6 +27,12 @@ export const LIVES_PER_GAME = _shared.LIVES_PER_GAME;
 export const SERVER_TICK_HZ = _shared.SERVER_TICK_HZ;
 export const TIE_WINDOW_MS = _shared.TIE_WINDOW_MS;
 export const BULLET_FIRE_COOLDOWN_MS = _shared.BULLET_FIRE_COOLDOWN_MS;
+export const BULLET_WALL_CLEARANCE = _shared.BULLET_WALL_CLEARANCE;
+export const MAX_BULLET_BOUNCES = _shared.MAX_BULLET_BOUNCES;
+export const BOT_DECISION_HZ = _shared.BOT_DECISION_HZ;
+export const THREAT_RADIUS_ENEMY = _shared.THREAT_RADIUS_ENEMY;
+export const THREAT_RADIUS_SELF = _shared.THREAT_RADIUS_SELF;
+export const THREAT_HEADING_THRESHOLD = _shared.THREAT_HEADING_THRESHOLD;
 
 // Derived
 export const PHYSICS_STEP = 1 / SERVER_TICK_HZ;

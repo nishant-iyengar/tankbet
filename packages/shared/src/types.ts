@@ -38,3 +38,15 @@ export interface GameHistoryResponse {
   entries: GameHistoryEntry[];
   nextCursor: string | null;
 }
+
+export interface PlatformStats {
+  totalPlayers: number;
+  totalGames: number;
+}
+
+export interface UserStats {
+  wins: number;
+  losses: number;
+  streak: number;
+  totalDonatedCents: number;
+}

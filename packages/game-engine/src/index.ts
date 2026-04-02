@@ -31,6 +31,12 @@ export {
   BULLET_FADE_SECONDS,
   TRACK_LIFETIME_MS,
   TRACK_SPACING,
+  BULLET_WALL_CLEARANCE,
+  MAX_BULLET_BOUNCES,
+  BOT_DECISION_HZ,
+  THREAT_RADIUS_ENEMY,
+  THREAT_RADIUS_SELF,
+  THREAT_HEADING_THRESHOLD,
 } from './constants';
 export type {
   Vec2,
@@ -60,7 +66,7 @@ export {
   shortestAngleDelta,
 } from './physics';
 
-export type { Cell, Wall, Maze, LineSegment } from './maze';
+export type { Cell, Wall, Maze, LineSegment, MazeOptions } from './maze';
 
 export {
   generateMaze,

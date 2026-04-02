@@ -8,3 +8,10 @@ logs/
 .vercel/
 .DS_Store
 .claude/worktrees/
+
+# Python RL Training
+training/.venv/
+training/__pycache__/
+training/*.pyc
+training/runs/
+training/data/

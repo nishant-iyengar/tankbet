@@ -238,40 +238,50 @@ export function PracticePage(): React.JSX.Element {
   }, []);
 
   return (
-    <div className="flex items-start gap-3">
-      <div className="relative inline-block">
-        <canvas
-          ref={canvasRef}
-          width={MAZE_COLS * CELL_SIZE}
-          height={MAZE_ROWS * CELL_SIZE}
-          className="border border-slate-700/50 rounded-lg block"
-        />
-        {status === 'loading' && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
-            <p className="text-slate-400 text-sm">Connecting…</p>
-          </div>
-        )}
-        {status === 'error' && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
-            <div className="text-center">
-              <ErrorAlert message={error} className="mb-3" />
-              <button
-                onClick={newMaze}
-                className="text-cyan-400 hover:text-cyan-300 text-sm underline"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        )}
-        {simState.active && (
-          <div className="absolute top-2 left-2 bg-black/70 text-yellow-400 text-xs font-mono px-2 py-1 rounded tabular-nums pointer-events-none">
-            {simState.latency}ms +{simState.jitter}ms jitter
-          </div>
-        )}
+    <div className="max-w-4xl">
+      {/* Page header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Practice Mode</h1>
+        <p className="text-slate-400 text-sm mt-1">Hone your skills against a bot. No stakes.</p>
       </div>
 
-      <div className="flex flex-col gap-2">
+      {/* Canvas card */}
+      <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-4 inline-block">
+        <div className="relative">
+          <canvas
+            ref={canvasRef}
+            width={MAZE_COLS * CELL_SIZE}
+            height={MAZE_ROWS * CELL_SIZE}
+            className="border border-slate-700/50 rounded-lg block"
+          />
+          {status === 'loading' && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
+              <p className="text-slate-400 text-sm">Connecting…</p>
+            </div>
+          )}
+          {status === 'error' && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/60">
+              <div className="text-center">
+                <ErrorAlert message={error} className="mb-3" />
+                <button
+                  onClick={newMaze}
+                  className="text-cyan-400 hover:text-cyan-300 text-sm underline"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
+          {simState.active && (
+            <div className="absolute top-2 left-2 bg-black/70 text-yellow-400 text-xs font-mono px-2 py-1 rounded tabular-nums pointer-events-none">
+              {simState.latency}ms +{simState.jitter}ms jitter
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Controls bar */}
+      <div className="flex items-center justify-between mt-4" style={{ maxWidth: MAZE_COLS * CELL_SIZE + 32 }}>
         <button
           onClick={newMaze}
           className="border border-slate-600 text-slate-300 text-sm font-medium px-4 py-2 rounded-lg hover:border-slate-500 hover:text-white transition-colors"
@@ -285,6 +295,9 @@ export function PracticePage(): React.JSX.Element {
           />
         )}
       </div>
+
+      {/* Controls reference */}
+      <p className="text-slate-500 text-xs mt-3">Arrow Keys to move · Space to fire · P to pause</p>
     </div>
   );
 }

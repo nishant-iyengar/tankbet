@@ -3087,3 +3087,82 @@ If the bot isn't learning well, tune in this order:
 | tank-battle | [github.com/garlicdevs](https://github.com/garlicdevs/tank-battle) | Multi-agent deep RL for tank combat |
 | DQN-DDQN-Pytorch | [github.com/XinJingHao](https://github.com/XinJingHao/DQN-DDQN-Pytorch) | Clean Duel Double DQN implementation |
 | Kaixhin/Rainbow | [github.com/Kaixhin](https://github.com/Kaixhin/Rainbow) | Full Rainbow DQN in PyTorch |
+
+---
+
+## 14. Implementation Plan
+
+Granular, phased checklist for building the full training pipeline. Each phase has a clear audit gate — do not proceed until the gate passes. Phases are roughly ordered by dependency; some can run in parallel where noted.
+
+### Phase Overview
+
+| # | Phase | Summary | Key Files | Audit Gate |
+|---|-------|---------|-----------|------------|
+| 1 | **Env Shell + Maze Data** | Create Gymnasium env skeleton, pre-generate 10K mazes via TS, load in Python. `reset()` returns stub obs, `step()` is a no-op. | `scripts/generate-mazes.ts`, `training/tank_env.py` | `env.reset(seed=42)` returns shape (87,), `env.step(0)` returns 5-tuple, `check_env()` passes, 10K mazes load from JSON |
+| 2 | **Action Table + Decode** | Implement the 18-action table and `_decode_action()`. Wire into `step()` so actions translate to `InputState` dicts. | `training/tank_env.py`, `training/action_table.py` | All 18 actions decode to correct `{up,down,left,right,fire}` dicts. Round-trip: `_decode_action(i)` for `i in 0..17` matches the table in Section 6. |
+| 3 | **Core Physics: Movement + Clamping** | Implement tank movement (rotation, forward/reverse), `_clamp_tank_to_maze()`, and basic position update in `_physics_tick()`. No wall collision yet — tanks slide along borders only. | `training/tank_env.py` | Tank moves in response to actions. Forward at 0° increases x. Rotation changes angle. Tank cannot leave the 1080×720 arena. Run 1000 random steps without crash. |
+| 4 | **Wall Collision (AABB)** | Implement `_collide_tank_walls()` (AABB simplified), `_collide_tank_with_endpoints()` (no-op for AABB), and `_build_wall_lookup()` from pre-generated segments. | `training/tank_env.py` | Tank stops at internal maze walls. Drive tank forward into a wall → position is corrected. Run 1000 random steps; tank stays within maze corridors. |
+| 5 | **Bullets: Fire, Move, Reflect, Hit** | Implement `_create_bullet()`, `_reflect_bullet()`, `_check_bullet_tank_hit()` (AABB), `_can_fire()`, bullet lifetime expiry. Wire bullet logic into `_physics_tick()`. | `training/tank_env.py` | Bullets spawn at barrel tip. Bullets reflect off walls. Bullets expire after 8s. Bullet hits set `tank["alive"] = False`. Fire cooldown (200ms) and max bullets (10) enforced. Self-kills via reflected bullets work. |
+| 6 | **Kill/Tie/Round/Game Logic** | Implement the 4-second tie window, life decrement, `_new_round()` (new maze + respawn), game termination (lives reach 0), and 2-minute truncation. Wire kill events and terminal rewards (+10/−10, +3/−3) into `step()`. | `training/tank_env.py` | Full game plays out: 5 lives per side, rounds end on kill, ties reset without life loss, game ends when a player hits 0 lives. `terminated=True` on game end, `truncated=True` at 2 min. Random-play games average 3-5 rounds. |
+| 7 | **Observation Encoding** | Implement `_get_observation()`: ego tank (7), opponent relative (8 incl. bearing), lives (2), bullets (50), local wall grid (18), metadata (3) = 88 values. Update `observation_space` shape to (88,). Implement `_has_wall()` with border edge handling. | `training/tank_env.py` | `obs.shape == (88,)`, all values in [-1, 1]. `check_env()` passes. Run 1000 random steps; `observation_space.contains(obs)` holds for every step. cos/sin of angle at 0° → (1, 0). Bearing to opponent directly ahead → cos≈1. |
+| 8 | **Reward Shaping** | Implement `_compute_shaping_reward()`: time penalty, PBRS approach reward (with `γ_tick`), wall collision penalty, wasted bullet penalty. Verify PBRS form: `γΦ(s') − Φ(s)`. | `training/tank_env.py` | Shaping rewards are 2-3 orders of magnitude smaller than terminal rewards. PBRS potential resets on new round. Moving toward opponent yields positive shaping; moving away yields negative. Wall collision triggers −0.002. |
+| 9 | **Rendering** | Implement pygame-based `render()`: walls, tanks (circle + barrel line), bullets, HUD (lives). Support `rgb_array` and `human` modes. | `training/tank_env.py` | `render_mode="rgb_array"` returns `(720, 1080, 3)` uint8 array with visible walls/tanks/bullets. `render_mode="human"` opens a pygame window showing live gameplay. `RecordVideo` wrapper produces playable `.mp4`. |
+| 10 | **Physics Parity Check** | Create TS trace recorder (`parity_trace.ts`) and Python parity checker (`parity_check.py`). Run 1000-tick deterministic simulation on both sides with identical maze (exported from TS). Compare positions tick-by-tick. | `packages/game-engine/src/parity_trace.ts`, `training/parity_check.py` | Max position delta < 0.01px over 1000 ticks. Bullet counts match. If using AABB simplification, document known divergences and confirm they are from the simplification (not bugs). |
+| 11 | **DQN + Replay Buffer + Agent (CartPole Validation)** | Implement `dqn.py` (Dueling DQN network), `experience_replay.py` (uniform buffer), and `main.py` (Agent class with training loop, linear epsilon, TensorBoard, video recording, checkpointing). **Validate on CartPole-v1 first, then LunarLander-v3.** | `training/dqn.py`, `training/experience_replay.py`, `training/main.py` | CartPole-v1 solves (avg reward >475 over 100 episodes) in <500 episodes. LunarLander-v3 solves (avg reward >200) in <1000 episodes. TensorBoard shows decreasing loss and increasing reward. Training resumes correctly with `--resume`. |
+| 12 | **Tank Training: Sparse Rewards** | Point the Agent at `TankBattleEnv`. Train with terminal rewards only (disable `_compute_shaping_reward`). Run for ~200K steps. | `training/main.py` | Agent moves and fires. Episode reward trends upward in TensorBoard. Recorded videos show intentional movement (not stuck in corners). No crashes over full run. |
+| 13 | **Tank Training: Dense Rewards** | Enable shaping rewards one at a time (time penalty → approach → wall penalty → wasted bullet). Train ~200K steps per reward addition. Monitor for degenerate behavior. | `training/main.py`, `training/tank_env.py` | Each reward addition improves behavior (shorter episodes, closing distance, smoother navigation, aimed shots). No degenerate behavior (dying fast to avoid time penalty, running toward bullets, etc.). If any reward hurts, remove it. |
+| 14 | **Self-Play** | Implement `SelfPlayEnv` (opponent pool from checkpoints). Switch training to self-play at ~500K steps. Continue training to 1M+ steps. | `training/self_play.py` | Opponent pool loads checkpoints. 50/50 split between latest and historical opponents. Agent beats random opponent >80% of games. Agent doesn't cycle strategies (beats old versions too). |
+| 15 | **ONNX Export + Server Deployment** | Implement `export_onnx.py`. Create `StateEncoder.ts`, `ActionDecoder.ts`, `BotPlayer.ts` in backend. Install `onnxruntime-node`. Wire BotPlayer into TankRoom as a virtual player. | `training/export_onnx.py`, `apps/backend/src/bot/*.ts` | ONNX file exports (~200-650KB). TS `encodeState()` output matches Python `_get_observation()` for identical game states. Bot plays in TankRoom at 20Hz without errors. Inference latency <1ms. |
+
+### Dependency Graph
+
+```
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6
+                                                                │
+                                                    Phase 7 ◄───┘
+                                                      │
+                                           ┌──────────┼──────────┐
+                                           ▼          ▼          ▼
+                                        Phase 8    Phase 9    Phase 10
+                                           │          │
+                                           └────┬─────┘
+                                                ▼
+                                            Phase 11
+                                           (CartPole)
+                                                │
+                                                ▼
+                                            Phase 12
+                                         (Sparse training)
+                                                │
+                                                ▼
+                                            Phase 13
+                                         (Dense rewards)
+                                                │
+                                                ▼
+                                            Phase 14
+                                          (Self-play)
+                                                │
+                                                ▼
+                                            Phase 15
+                                        (Export + Deploy)
+```
+
+### Status Tracker
+
+| # | Phase | Status | Notes |
+|---|-------|--------|-------|
+| 1 | Env Shell + Maze Data | ✅ Done | `generate-mazes.ts` exports raw walls + merged segments + endpoints. `tank_env.py` loads from JSON, builds cell-level wall lookup, generates fresh spawns via Python RNG. Obs shape = 88. Constants loaded from `constants.json`. |
+| 2 | Action Table + Decode | 🟡 Partial | `action_table.py` exists with full 18-action table + `decode_action()`. Not yet wired into `tank_env.py`. |
+| 3 | Core Physics: Movement | ⬜ Not started | |
+| 4 | Wall Collision (AABB) | ⬜ Not started | Start with AABB; upgrade to OBB later if needed |
+| 5 | Bullets | ⬜ Not started | Most complex physics phase |
+| 6 | Kill/Tie/Round/Game | ⬜ Not started | |
+| 7 | Observation Encoding | ⬜ Not started | Updates obs shape from stub 87 → real 88 |
+| 8 | Reward Shaping | ⬜ Not started | |
+| 9 | Rendering | ⬜ Not started | Can parallelize with Phase 8 |
+| 10 | Physics Parity Check | ⬜ Not started | Can parallelize with Phases 8-9 |
+| 11 | DQN + Agent (CartPole) | 🟡 Partial | `dqn.py` (Dueling DQN) ✅, `experience_replay.py` (ReplayMemory) ✅, `main.py` is stub — Agent class + training loop + TensorBoard + resume not yet implemented. CartPole/LunarLander validation not yet run. |
+| 12 | Tank Training: Sparse | ⬜ Not started | |
+| 13 | Tank Training: Dense | ⬜ Not started | |
+| 14 | Self-Play | ⬜ Not started | |
+| 15 | ONNX Export + Deploy | ⬜ Not started | |
