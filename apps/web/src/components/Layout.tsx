@@ -42,7 +42,7 @@ export function Layout(): React.JSX.Element {
       <aside className="w-52 bg-slate-900 border-r border-slate-700/50 flex flex-col fixed h-full">
         <div className="px-5 py-5 border-b border-slate-700/50">
           <Link to="/" className="text-xl font-bold tracking-tight text-cyan-400">
-            TankBet
+            Tank Wars
           </Link>
         </div>
 

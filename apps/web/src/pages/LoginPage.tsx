@@ -172,7 +172,7 @@ export function LoginPage(): React.JSX.Element {
 
         {/* Branding content */}
         <div className="relative z-10 flex flex-col justify-center p-12 w-full h-full">
-          <h1 className="text-3xl font-bold text-cyan-400 tracking-tight mb-6">TankBet</h1>
+          <h1 className="text-3xl font-bold text-cyan-400 tracking-tight mb-6">Tank Wars</h1>
           <h2 className="text-4xl xl:text-5xl font-bold text-white leading-tight">
             Battle your friends.
             <br />
@@ -186,7 +186,7 @@ export function LoginPage(): React.JSX.Element {
         <div className="w-full max-w-sm">
           {/* Mobile-only logo */}
           <div className="lg:hidden mb-10 text-center">
-            <h1 className="text-3xl font-bold text-cyan-400 tracking-tight">TankBet</h1>
+            <h1 className="text-3xl font-bold text-cyan-400 tracking-tight">Tank Wars</h1>
           </div>
 
           {/* Dev Login Section */}

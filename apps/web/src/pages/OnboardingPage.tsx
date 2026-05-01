@@ -31,7 +31,7 @@ export function OnboardingPage(): React.JSX.Element {
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold text-cyan-400 mb-1">Welcome to TankBet</h1>
+          <h1 className="text-2xl font-bold text-cyan-400 mb-1">Welcome to Tank Wars</h1>
           <p className="text-sm text-slate-500">Step 1 of 1</p>
         </div>
 
@@ -45,7 +45,7 @@ export function OnboardingPage(): React.JSX.Element {
             <h2 className="text-base font-semibold text-white mb-3">Terms of Service</h2>
             <div className="bg-slate-800 rounded-lg p-4 mb-4 max-h-44 overflow-y-auto text-sm text-slate-400 space-y-2">
               <p>
-                By using TankBet, you agree to participate in charitable gaming. All game outcomes
+                By using Tank Wars, you agree to participate in charitable gaming. All game outcomes
                 result in donations to registered 501(c)(3) charities. No player personally profits
                 from game outcomes.
               </p>
@@ -54,7 +54,7 @@ export function OnboardingPage(): React.JSX.Element {
                 is permitted in your jurisdiction.
               </p>
               <p>
-                TankBet reserves the right to modify these terms with notice.
+                Tank Wars reserves the right to modify these terms with notice.
               </p>
             </div>
             <label className="flex items-center gap-3 mb-4 cursor-pointer">

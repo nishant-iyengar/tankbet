@@ -6,7 +6,7 @@ export function MobileBlocker(): React.JSX.Element {
         Desktop Only
       </h1>
       <p className="max-w-xs text-slate-400 leading-relaxed">
-        TankBet requires a keyboard to play. Please open this site on a desktop
+        Tank Wars requires a keyboard to play. Please open this site on a desktop
         or laptop computer.
       </p>
     </div>
