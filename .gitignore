@@ -15,3 +15,21 @@ training/__pycache__/
 training/*.pyc
 training/runs/
 training/data/
+training/*.pt
+training/*.pth
+training/*.onnx
+training/*.pkl
+training/debug_bfs_images/
+training/debug_obs_visual/
+
+# Videos (all locations)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+# Exception: frontend assets
+!apps/web/public/**/*.mp4
+!apps/web/public/**/*.webm
+!apps/web/src/assets/**/*.mp4
+!apps/web/src/assets/**/*.webm

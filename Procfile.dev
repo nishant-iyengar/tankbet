@@ -1,6 +1,5 @@
 web: pnpm --filter @tankbet/web dev 2>&1 | tee logs/web.log
 backend: PORT=3001 pnpm --filter @tankbet/backend dev 2>&1 | tee logs/backend.log
 prisma: pnpm --filter @tankbet/backend exec prisma generate --watch 2>&1 | tee logs/prisma.log
-stripe: stripe listen --forward-to localhost:3001/api/webhooks/stripe 2>&1 | tee logs/stripe.log
 toxiproxy: toxiproxy-server 2>&1 | tee logs/toxiproxy.log
 toxisetup: sleep 2 && ./scripts/toxiproxy-setup.sh 2>&1 | tee logs/toxisetup.log

@@ -15,13 +15,9 @@ export const env = {
   databaseUrl:         require('DATABASE_URL'),
   clerkPublishableKey: optional('CLERK_PUBLISHABLE_KEY', ''),
   clerkSecretKey:      optional('CLERK_SECRET_KEY', ''),
-  stripeSecretKey:     optional('STRIPE_SECRET_KEY', ''),
-  stripeWebhookSecret: optional('STRIPE_WEBHOOK_SECRET', ''),
-  stripePublishableKey:optional('STRIPE_PUBLISHABLE_KEY', ''),
   twilioAccountSid:    optional('TWILIO_ACCOUNT_SID', ''),
   twilioAuthToken:     optional('TWILIO_AUTH_TOKEN', ''),
   twilioPhoneNumber:   optional('TWILIO_PHONE_NUMBER', ''),
-  pledgeApiKey:        optional('PLEDGE_API_KEY', ''),
   betaMode:            optional('BETA_MODE', 'false') === 'true',
 } as const;
 

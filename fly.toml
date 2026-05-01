@@ -1,0 +1,44 @@
+app            = "tankbet-backend"
+primary_region = "sjc"   # San Jose, CA (closest to San Francisco)
+
+# Give the process 5 minutes to drain active games before SIGKILL.
+# The drain code exits after 4.5 min, leaving 30s margin before SIGKILL.
+kill_signal  = "SIGTERM"
+kill_timeout = "5m"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT     = "3001"
+
+# Run Prisma migrations automatically on every deploy before traffic switches over
+[deploy]
+  release_command = "sh -c 'cd /app/apps/backend && node_modules/.bin/prisma migrate deploy'"
+
+[http_service]
+  internal_port        = 3001
+  force_https          = true
+  # Never stop the machine — active WebSocket sessions would be killed
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  # Colyseus rooms are in-memory — must stay on 1 machine until Redis presence is added
+  max_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 500
+    soft_limit = 400
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "5s"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"

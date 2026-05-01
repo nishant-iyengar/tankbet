@@ -41,7 +41,7 @@ export function drawMaze(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderin
 
 export function drawTank(ctx: CanvasRenderingContext2D, tank: TankState, color: string): void {
   ctx.save();
-  ctx.translate(Math.round(tank.x), Math.round(tank.y));
+  ctx.translate(tank.x, tank.y);
   ctx.rotate(degreesToRadians(tank.angle));
 
   const hw = TANK_WIDTH / 2;
@@ -110,7 +110,7 @@ export function drawBullet(ctx: CanvasRenderingContext2D, bullet: BulletState, c
 
   // Orient bullet in direction of travel
   const angle = Math.atan2(bullet.vy, bullet.vx);
-  ctx.translate(bullet.x | 0, bullet.y | 0);
+  ctx.translate(bullet.x, bullet.y);
   ctx.rotate(angle);
 
   const halfLen = BULLET_LENGTH / 2;

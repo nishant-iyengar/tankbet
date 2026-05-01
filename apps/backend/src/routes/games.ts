@@ -5,6 +5,7 @@ import { INVITE_EXPIRY_SECONDS } from '@tankbet/game-engine/constants';
 import crypto from 'node:crypto';
 import { matchMaker } from '@colyseus/core';
 import { subscribe, unsubscribe, notify } from '../services/inviteEvents';
+import { isDraining } from '../drain';
 
 export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
   // POST /api/games/create — Create invite
@@ -115,6 +116,15 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         data: { activeGameId: game.id },
       });
     });
+
+    if (isDraining()) {
+      // Roll back game status so users can retry after the new machine is up
+      await prisma.$transaction([
+        prisma.game.update({ where: { id: game.id }, data: { status: 'PENDING_ACCEPTANCE', opponentId: null, startedAt: null } }),
+        prisma.user.update({ where: { id: user.id }, data: { activeGameId: null } }),
+      ]);
+      return reply.status(503).send({ error: 'Server is restarting — please try again in a moment' });
+    }
 
     const room = await matchMaker.createRoom('tank', {
       gameId: game.id,

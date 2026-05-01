@@ -14,12 +14,12 @@ export function PolicyPage(): React.JSX.Element {
             body: 'You must be at least 18 years of age to use TankBet. By creating an account, you certify that you meet this requirement and that charitable gaming is legal in your jurisdiction.',
           },
           {
-            title: '3. Deposits and Withdrawals',
-            body: 'Deposits are made via ACH bank transfer with a minimum of $1.00. Funds are available after confirmation by our payment processor. A $0.25 processing fee is applied to all withdrawals to cover bank transfer costs. This fee is passed directly to our payment processor — TankBet does not profit from it.',
+            title: '3. Game Funds',
+            body: 'Game bets are committed when an invite is accepted and disbursed automatically at game end. There are no manual deposits or withdrawals.',
           },
           {
             title: '4. Charitable Donations',
-            body: "Game bets are committed to charity. A 5% processing fee is deducted by our donation partner (Pledge.to). The remaining amount is disbursed to the winning player's chosen charity.",
+            body: "Game bets are committed to charity. The full bet amount is donated to the winning player's chosen charity.",
           },
           {
             title: '5. Game Rules',

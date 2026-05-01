@@ -11,7 +11,6 @@
   "dependencies": {
     "@clerk/clerk-react": "^5.20.0",
     "@colyseus/sdk": "^0.17.34",
-    "@stripe/stripe-js": "^8.8.0",
     "@tankbet/game-engine": "workspace:*",
     "@tankbet/shared": "workspace:*",
     "react": "^19.0.0",
