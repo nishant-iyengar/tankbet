@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { useAppAuth } from '../auth/useAppAuth';
+import { useAppAuth, useAppUser } from '../auth/useAppAuth';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../api/client';
 import { formatTime } from '@tankbet/shared/utils';
@@ -24,6 +24,7 @@ export function InvitePage(): React.JSX.Element {
   const [searchParams] = useSearchParams();
   const isCreator = searchParams.get('creator') === 'true';
   const { isSignedIn } = useAppAuth();
+  const { user } = useAppUser();
   const { post } = useApi();
   const navigate = useNavigate();
 
@@ -214,6 +215,8 @@ export function InvitePage(): React.JSX.Element {
     );
   }
 
+  const isOwnInvite = isSignedIn && user?.username === invite.creatorUsername;
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 w-full max-w-sm">
@@ -230,9 +233,22 @@ export function InvitePage(): React.JSX.Element {
           <p className="text-red-400 text-sm mb-4">This invite has expired.</p>
         )}
 
+        {isOwnInvite && (
+          <div className="flex items-start gap-2.5 bg-amber-400/10 border border-amber-400/30 rounded-lg px-3 py-2.5 mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <p className="text-amber-300 text-sm">This is your own invite. Share the link with your opponent to play.</p>
+          </div>
+        )}
+
         {error && <ErrorAlert message={error} className="mb-3" />}
 
         {timeLeft <= 0 ? (
+          <HomeButton />
+        ) : isOwnInvite ? (
           <HomeButton />
         ) : (
           <div className="flex gap-2">
