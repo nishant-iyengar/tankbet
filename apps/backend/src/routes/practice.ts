@@ -18,6 +18,8 @@ export async function practiceRoutes(fastify: FastifyInstance): Promise<void> {
 
     const reservation = await matchMaker.reserveSeatFor(listing, {}, { userId });
 
+    console.log('[practice/start] roomId=%s processId=%s sessionId=%s', reservation.roomId, reservation.processId, reservation.sessionId);
+
     return reply.send({ reservation, userId });
   });
 }

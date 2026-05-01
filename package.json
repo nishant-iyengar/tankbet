@@ -13,6 +13,11 @@
     "test": "vitest run",
     "test:game": "open http://localhost:5173/dev/game"
   },
+  "pnpm": {
+    "overrides": {
+      "zod": "^3.25.76"
+    }
+  },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
     "turbo": "^2.3.0",

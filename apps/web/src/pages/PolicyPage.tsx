@@ -7,11 +7,11 @@ export function PolicyPage(): React.JSX.Element {
         {[
           {
             title: '1. Overview',
-            body: 'Tank Wars is a charitable gaming platform. All game outcomes result in donations to registered 501(c)(3) charities. No player personally profits from game outcomes.',
+            body: 'Tank Battle is a charitable gaming platform. All game outcomes result in donations to registered 501(c)(3) charities. No player personally profits from game outcomes.',
           },
           {
             title: '2. Eligibility',
-            body: 'You must be at least 18 years of age to use Tank Wars. By creating an account, you certify that you meet this requirement and that charitable gaming is legal in your jurisdiction.',
+            body: 'You must be at least 18 years of age to use Tank Battle. By creating an account, you certify that you meet this requirement and that charitable gaming is legal in your jurisdiction.',
           },
           {
             title: '3. Game Funds',
@@ -27,7 +27,7 @@ export function PolicyPage(): React.JSX.Element {
           },
           {
             title: '6. Modifications',
-            body: 'Tank Wars reserves the right to modify these terms at any time with reasonable notice. Continued use of the platform constitutes acceptance of modified terms.',
+            body: 'Tank Battle reserves the right to modify these terms at any time with reasonable notice. Continued use of the platform constitutes acceptance of modified terms.',
           },
         ].map((section) => (
           <section key={section.title}>

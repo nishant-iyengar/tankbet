@@ -70,6 +70,11 @@ async function start(): Promise<void> {
   gameServer.define('tank', TankRoom);
   gameServer.define('practice', PracticeRoom);
 
+  // Debug: log every WebSocket upgrade so we can confirm the path Colyseus receives
+  fastify.server.on('upgrade', (req) => {
+    logger.info({ url: req.url }, '[ws-upgrade] received');
+  });
+
   await fastify.listen({ port: env.port, host: '0.0.0.0' });
 }
 

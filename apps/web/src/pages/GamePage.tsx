@@ -292,7 +292,7 @@ export function GamePage(): React.JSX.Element {
           <p className="text-2xl mb-3">🖥️</p>
           <h1 className="text-lg font-bold text-white mb-2">Desktop Required</h1>
           <p className="text-slate-400 text-sm">
-            Tank Wars requires a desktop browser with a keyboard.
+            Tank Battle requires a desktop browser with a keyboard.
           </p>
         </div>
       </div>

@@ -7,8 +7,8 @@ export function TaxExemptionPage(): React.JSX.Element {
         <section>
           <h2 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">501(c)(3) Charitable Giving</h2>
           <p className="text-slate-300 text-sm leading-relaxed">
-            All charities on Tank Wars are registered 501(c)(3) nonprofit organizations. Donations
-            made through Tank Wars may be tax-deductible to the extent permitted by law.
+            All charities on Tank Battle are registered 501(c)(3) nonprofit organizations. Donations
+            made through Tank Battle may be tax-deductible to the extent permitted by law.
           </p>
         </section>
 
@@ -16,7 +16,7 @@ export function TaxExemptionPage(): React.JSX.Element {
           <h2 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Annual Tax Reminder</h2>
           <p className="text-slate-300 text-sm leading-relaxed">
             Each year in October, November, and December, we'll send you a text message summarizing
-            your year-to-date donations on Tank Wars. You can use this as a reference when preparing
+            your year-to-date donations on Tank Battle. You can use this as a reference when preparing
             your taxes — though we recommend consulting a tax professional.
           </p>
         </section>
@@ -41,13 +41,13 @@ export function TaxExemptionPage(): React.JSX.Element {
           <h2 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-2">Record Keeping</h2>
           <p className="text-slate-300 text-sm leading-relaxed">
             Your full donation history is available on the Donations page. For official tax receipts,
-            the 501(c)(3) organization itself is the issuing authority — Tank Wars records serve as a
+            the 501(c)(3) organization itself is the issuing authority — Tank Battle records serve as a
             personal reference.
           </p>
         </section>
 
         <p className="text-xs text-slate-600 pt-2">
-          Tank Wars is not a tax advisor. Consult a qualified tax professional for advice specific to your situation.
+          Tank Battle is not a tax advisor. Consult a qualified tax professional for advice specific to your situation.
         </p>
       </div>
     </div>
