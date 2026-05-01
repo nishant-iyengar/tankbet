@@ -242,7 +242,7 @@ export function PracticePage(): React.JSX.Element {
       {/* Page header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Practice Mode</h1>
-        <p className="text-slate-400 text-sm mt-1">Hone your skills against a bot. No stakes.</p>
+        <p className="text-slate-400 text-sm mt-1">No stakes. Just practice.</p>
       </div>
 
       {/* Canvas card */}

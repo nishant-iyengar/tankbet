@@ -74,7 +74,7 @@ function GameResultsOverlay({
               onClick={onRetry}
               className="flex-1 bg-cyan-400 text-slate-900 font-semibold py-2.5 rounded-lg hover:bg-cyan-300 transition-colors text-sm"
             >
-              New Bot Game
+              Play Again
             </button>
           </div>
         ) : (
